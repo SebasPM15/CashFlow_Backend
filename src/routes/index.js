@@ -1,13 +1,15 @@
+// src/routes/index.js
+
 import { Router } from 'express';
-import authRoutes from './auth.routes.js'; // <-- IMPORTAMOS LAS RUTAS
+import authRoutes from './auth.routes.js';
+import cashflowRoutes from './cashflow.routes.js';
+import userRoutes from './user.routes.js';
 
 const router = Router();
 
-// Montamos las rutas de autenticación bajo el prefijo '/auth'
 router.use('/auth', authRoutes);
-
-// Placeholder para futuras rutas
-// router.use('/cashflow', cashFlowRoutes);
+router.use('/cashflow', cashflowRoutes);
+router.use('/users', userRoutes);
 
 router.get('/', (req, res) => {
     res.json({ message: `Welcome to ${process.env.APP_NAME || 'API'} - Version 1.0` });

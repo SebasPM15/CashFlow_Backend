@@ -1,4 +1,7 @@
+// src/middlewares/auth.middleware.js
+
 import jwt from 'jsonwebtoken';
+import httpStatus from 'http-status'; // Es buena práctica usar http-status
 import config from '../config/index.js';
 import db from '../models/index.js';
 import { ApiError } from '../utils/ApiError.js';
@@ -23,7 +26,7 @@ function _extractTokenFromHeader(req) {
 export const secureEndpoint = asyncHandler(async (req, res, next) => {
     const token = _extractTokenFromHeader(req);
     if (!token) {
-        throw new ApiError(401, 'No autorizado. Token no proporcionado.');
+        throw new ApiError(httpStatus.UNAUTHORIZED, 'No autorizado. Token no proporcionado.');
     }
 
     let decoded;
@@ -33,7 +36,7 @@ export const secureEndpoint = asyncHandler(async (req, res, next) => {
             audience: config.jwt.audience,
         });
     } catch (error) {
-        throw new ApiError(401, 'No autorizado. El token es inválido o ha expirado.');
+        throw new ApiError(httpStatus.UNAUTHORIZED, 'No autorizado. El token es inválido o ha expirado.');
     }
 
     const user = await db.User.findByPk(decoded.sub, {
@@ -41,42 +44,55 @@ export const secureEndpoint = asyncHandler(async (req, res, next) => {
     });
 
     if (!user || !user.is_active) {
-        throw new ApiError(401, 'El usuario asociado a esta sesión ya no es válido o está inactivo.');
+        throw new ApiError(httpStatus.UNAUTHORIZED, 'El usuario asociado a esta sesión ya no es válido o está inactivo.');
     }
 
-    // Adjuntamos el usuario al request para uso en controladores posteriores.
     req.user = user.toJSON();
     next();
 });
 
 /**
  * Middleware para la verificación de sesión stateful.
- * Debe usarse SIEMPRE DESPUÉS del middleware `protect`.
- * Verifica que el `sessionId` y el `uuid` del `dinHeader` existan y que la sesión sea válida en la BD.
  */
 export const checkStatefulSession = asyncHandler(async (req, res, next) => {
     const { sessionId, uuid } = req.dinHeader || {};
 
-    // --- CORRECCIÓN CLAVE: Validamos ambos campos ---
     if (!sessionId) {
-        throw new ApiError(401, 'El `sessionId` es requerido en el `dinHeader` para esta operación.');
+        throw new ApiError(httpStatus.UNAUTHORIZED, 'El `sessionId` es requerido en el `dinHeader` para esta operación.');
     }
     if (!uuid) {
-        throw new ApiError(401, 'El `uuid` de transacción es requerido en el `dinHeader` para esta operación.');
+        throw new ApiError(httpStatus.UNAUTHORIZED, 'El `uuid` de transacción es requerido en el `dinHeader` para esta operación.');
     }
 
-    // Verificamos que la sesión exista Y que pertenezca al usuario del token.
     const session = await db.Session.findOne({
         where: {
             session_id: sessionId,
-            user_id: req.user.user_id, // `req.user` fue establecido por el middleware `protect`
+            user_id: req.user.user_id,
         },
     });
 
     if (!session) {
-        throw new ApiError(401, 'Sesión inválida, expirada o no autorizada.');
+        throw new ApiError(httpStatus.UNAUTHORIZED, 'Sesión inválida, expirada o no autorizada.');
     }
 
-    // Si la sesión es válida, continuamos.
     next();
 });
+
+/**
+ * Factoría de Middlewares para autorización basada en roles.
+ */
+export const authorizeRole = (...allowedRoles) => {
+    return asyncHandler((req, res, next) => {
+        if (!req.user || !req.user.role || !req.user.role.role_name) {
+            throw new ApiError(httpStatus.INTERNAL_SERVER_ERROR, 'Información de rol de usuario no encontrada en la petición.');
+        }
+
+        const userRole = req.user.role.role_name;
+
+        if (!allowedRoles.includes(userRole)) {
+            throw new ApiError(httpStatus.FORBIDDEN, 'Acceso denegado. No tienes los permisos necesarios para realizar esta acción.');
+        }
+
+        next();
+    });
+};

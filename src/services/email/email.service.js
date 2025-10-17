@@ -4,6 +4,7 @@ import config from '../../config/index.js';
 import logger from '../../utils/logger.js';
 import { createVerificationEmail } from './verification.template.js';
 import { createPasswordResetEmail } from './passwordReset.template.js';
+import { createTransactionNotificationEmail } from './transactionNotification.template.js';
 
 class EmailService {
     constructor() {
@@ -61,6 +62,11 @@ class EmailService {
 
     async sendPasswordResetEmail(to, code) {
         const template = createPasswordResetEmail({ verificationCode: code });
+        await this._sendSecure(to, template);
+    }
+
+    async sendNewTransactionNotification(to, transactionDetails) {
+        const template = createTransactionNotificationEmail(transactionDetails);
         await this._sendSecure(to, template);
     }
 }

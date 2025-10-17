@@ -30,7 +30,7 @@ const startServer = async () => {
     try {
         logger.info('================================================================');
         logger.info('⏳ INICIANDO SERVIDOR...');
-        
+
         // 1. Conectar a la base de datos con reintentos
         await authenticateWithRetry();
 
@@ -45,8 +45,8 @@ const startServer = async () => {
 
         app.use(helmet());
         app.use(cors());
-        app.use(express.json({ limit: '16kb' }));
-        app.use(express.urlencoded({ extended: true, limit: '16kb' }));
+        app.use(express.json({ limit: '10mb' }));
+        app.use(express.urlencoded({ extended: true, limit: '10mb' }));
         app.use(cookieParser());
 
         const morganFormat = config.app.env === 'production' ? 'combined' : 'dev';
@@ -68,11 +68,30 @@ const startServer = async () => {
 
         // 8. Manejo de cierre grácil (Graceful Shutdown)
         const gracefulShutdown = (signal) => {
-            logger.info(`\nSeñal ${signal} recibida. Apagando servidor de forma grácil...`);
-            server.close(() => {
+            logger.info(`\n🚨 Recibida señal ${signal}. Iniciando cierre controlado...`);
+
+            // 1. Dejar de aceptar nuevas conexiones
+            server.close(async () => {
                 logger.info('✅ Servidor HTTP cerrado.');
+
+                // 2. Cerrar el pool de conexiones de la base de datos (LA PIEZA CLAVE)
+                try {
+                    await db.sequelize.close();
+                    logger.info('✅ Conexiones de la base de datos cerradas.');
+                } catch (error) {
+                    logger.error('❌ Error al cerrar las conexiones de la base de datos:', error);
+                }
+
+                // 3. Salir del proceso
+                logger.info('👋 Adiós!');
                 process.exit(0);
             });
+
+            // Forzar el cierre después de un tiempo si las conexiones no se cierran a tiempo
+            setTimeout(() => {
+                logger.error('❌ Cierre forzado por timeout. Algunas conexiones pueden no haberse cerrado correctamente.');
+                process.exit(1);
+            }, 10000); // 10 segundos de tiempo de gracia
         };
 
         process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));

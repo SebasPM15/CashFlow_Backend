@@ -99,6 +99,11 @@ const config = {
         },
         from: env.EMAIL_FROM,
     },
+    supabase: {
+        url: process.env.SUPABASE_URL,
+        serviceKey: process.env.SUPABASE_SERVICE_KEY,
+        bucketName: 'evidence', // Definimos el nombre del bucket aquí
+    },
 };
 
 // Congela el objeto para hacerlo inmutable, previniendo modificaciones accidentales

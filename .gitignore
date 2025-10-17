@@ -63,6 +63,7 @@ Desktop.ini
 dist
 build
 out
+uploads
 
 # Reportes de cobertura de pruebas
 coverage
