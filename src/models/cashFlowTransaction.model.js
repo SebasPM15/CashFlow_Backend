@@ -45,6 +45,14 @@ const CashFlowTransaction = sequelize.define('CashFlowTransaction', {
         type: DataTypes.DECIMAL(12, 2),
         allowNull: false,
     },
+    status: {
+        type: DataTypes.STRING(20),
+        allowNull: false,
+        defaultValue: 'ACTIVE',
+        validate: {
+            isIn: [['ACTIVE', 'CANCELLED']],
+        },
+    },
 }, {
     tableName: 'cash_flow_transactions',
     timestamps: true,

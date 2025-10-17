@@ -58,6 +58,7 @@ const createTransaction = async (transactionData, userId) => {
         // Buscamos la transacción con la fecha de creación ('created_at') más reciente.
         // Esta es la última entrada real en nuestro "libro de contabilidad".
         const lastKnownTransaction = await db.CashFlowTransaction.findOne({
+            where: { status: 'ACTIVE' },
             order: [['created_at', 'DESC']], // La última que se guardó en la BD
             limit: 1,
             transaction: t,
@@ -134,42 +135,70 @@ const createTransaction = async (transactionData, userId) => {
  * Obtiene una lista paginada de transacciones, incluyendo sus evidencias.
  */
 const getTransactionsList = async (user, queryParams) => {
-    const { page = 1, limit = 10, userId: adminUserIdFilter } = queryParams;
+    const {
+        page = 1,
+        limit = 10,
+        userId: adminUserIdFilter,
+        startDate,
+        endDate,
+        categoryId,
+        subcategoryId,
+        paymentMethod,
+    } = queryParams;
+
     const offset = (page - 1) * limit;
 
+    // --- CONSTRUCCIÓN DINÁMICA DE LA CONSULTA (CORREGIDA) ---
     const whereClause = {};
+
+    // Filtro base por rol de usuario
     if (user.role.role_name === 'employee') {
         whereClause.user_id = user.user_id;
     } else if (user.role.role_name === 'admin' && adminUserIdFilter) {
         whereClause.user_id = adminUserIdFilter;
     }
 
+    // Añadir filtros directos si existen
+    if (paymentMethod) whereClause.payment_method = paymentMethod;
+    if (subcategoryId) whereClause.subcategory_id = subcategoryId;
+
+    // CORRECCIÓN: Se mueve el filtro de categoryId a la cláusula principal
+    // usando la notación '$' para referenciar una columna de una tabla asociada.
+    if (categoryId) {
+        whereClause['$subcategory.category_id$'] = categoryId;
+    }
+    
+    // Filtro por rango de fechas
+    if (startDate && endDate) {
+        whereClause.transaction_date = { [Op.between]: [new Date(startDate), new Date(endDate)] };
+    } else if (startDate) {
+        whereClause.transaction_date = { [Op.gte]: new Date(startDate) };
+    } else if (endDate) {
+        whereClause.transaction_date = { [Op.lte]: new Date(endDate) };
+    }
+
+    // Ejecutar la consulta final
     const { count, rows } = await db.CashFlowTransaction.findAndCountAll({
         where: whereClause,
-        limit,
-        offset,
-        order: [['transaction_date', 'DESC']],
         include: [
+            { model: db.User, as: 'user', attributes: ['user_id', 'first_name', 'last_name'] },
+            { model: db.Evidence, as: 'evidences', attributes: ['evidence_id', 'original_filename'] },
+            // La inclusión de Subcategory y Category se mantiene igual, pero sin el 'where' dinámico
             {
-                model:
-                    db.User, as: 'user',
-                attributes: ['user_id', 'first_name', 'last_name']
-            },
-            {
-                model:
-                    db.Subcategory, as: 'subcategory',
+                model: db.Subcategory,
+                as: 'subcategory',
                 attributes: ['subcategory_name'],
                 include: {
-                    model: db.Category, as: 'category',
-                    attributes: ['category_name']
-                }
-            },
-            {
-                model:
-                    db.Evidence, as: 'evidences',
-                attributes: ['evidence_id', 'original_filename', 'file_path']
+                    model: db.Category,
+                    as: 'category',
+                    attributes: ['category_name'],
+                },
             },
         ],
+        limit,
+        offset,
+        order: [['transaction_date', 'DESC'], ['created_at', 'DESC']],
+        distinct: true,
     });
 
     return {
@@ -229,9 +258,133 @@ const upsertEvidence = async (transactionId, evidenceData, user) => {
     });
 };
 
+const cancelTransaction = async (transactionId, user) => {
+    return await db.sequelize.transaction(async (t) => {
+        // --- 1. Buscar la transacción original y activa (sin cambios) ---
+        const originalTransaction = await db.CashFlowTransaction.findOne({
+            where: {
+                transaction_id: transactionId,
+                status: 'ACTIVE',
+            },
+            transaction: t,
+        });
+
+        if (!originalTransaction) {
+            throw new ApiError(httpStatus.NOT_FOUND, 'La transacción activa especificada no existe o ya ha sido cancelada.');
+        }
+
+        // --- 2. Validar permisos (sin cambios) ---
+        if (user.role.role_name === 'employee' && originalTransaction.user_id !== user.user_id) {
+            throw new ApiError(httpStatus.FORBIDDEN, 'No tienes permiso para cancelar esta transacción.');
+        }
+
+        // --- 3. Marcar la transacción original como 'CANCELLED' ---
+        originalTransaction.status = 'CANCELLED';
+        await originalTransaction.save({ transaction: t });
+
+        // --- 4. Crear la transacción de reversión (Lógica corregida) ---
+        // CORRECCIÓN: Se busca la última transacción ACTIVA, igual que en createTransaction.
+        const lastKnownTransaction = await db.CashFlowTransaction.findOne({
+            where: { status: 'ACTIVE' },
+            order: [['created_at', 'DESC']],
+            limit: 1,
+            transaction: t,
+        });
+        
+        // Si no hay ninguna transacción activa, el saldo previo es el inicial del mes.
+        // Esto cubre el caso de que se cancele la única transacción existente.
+        const date = new Date(originalTransaction.transaction_date);
+        const monthlyBalance = await db.MonthlyBalance.findOne({ 
+            where: { year: date.getFullYear(), month: date.getMonth() + 1 }, 
+            transaction: t 
+        });
+
+        const previousBalance = lastKnownTransaction
+            ? parseFloat(lastKnownTransaction.resulting_balance)
+            : parseFloat(monthlyBalance.initial_balance);
+
+        // CORRECCIÓN: Se convierten a número los valores de débito/crédito para evitar el NaN.
+        const reversalDebit = parseFloat(originalTransaction.credit);
+        const reversalCredit = parseFloat(originalTransaction.debit);
+        
+        // El cálculo ahora es seguro y siempre producirá un número.
+        const resultingBalance = previousBalance + reversalCredit - reversalDebit;
+
+        const reversalTransaction = await db.CashFlowTransaction.create({
+            user_id: user.user_id,
+            subcategory_id: originalTransaction.subcategory_id,
+            transaction_date: new Date(),
+            payment_method: 'SYSTEM_REVERSAL',
+            concept: `Reversión de transacción #${originalTransaction.transaction_id}: ${originalTransaction.concept}`,
+            debit: reversalDebit,
+            credit: reversalCredit,
+            resulting_balance: resultingBalance,
+            status: 'ACTIVE',
+        }, { transaction: t });
+
+        return reversalTransaction;
+    });
+};
+
+const updateTransactionConcept = async (transactionId, newConcept, user) => {
+    // 1. Buscamos la transacción por su clave primaria.
+    const transaction = await db.CashFlowTransaction.findByPk(transactionId);
+
+    // 2. Validamos que la transacción exista.
+    if (!transaction) {
+        throw new ApiError(httpStatus.NOT_FOUND, 'La transacción especificada no existe.');
+    }
+
+    // 3. Verificamos los permisos: un empleado solo puede editar sus propias transacciones.
+    if (user.role.role_name === 'employee' && transaction.user_id !== user.user_id) {
+        throw new ApiError(httpStatus.FORBIDDEN, 'No tienes permiso para modificar esta transacción.');
+    }
+
+    // 4. Actualizamos el campo 'concept'.
+    transaction.concept = newConcept;
+    
+    // 5. Guardamos el cambio en la base de datos.
+    await transaction.save();
+
+    // 6. Devolvemos la instancia de la transacción con el campo actualizado.
+    return transaction;
+};
+
+const getEvidenceDownloadUrl = async (evidenceId, user) => {
+    // 1. Buscamos el registro de evidencia e incluimos la transacción asociada para verificar el dueño.
+    const evidence = await db.Evidence.findOne({
+        where: { evidence_id: evidenceId },
+        include: {
+            model: db.CashFlowTransaction,
+            as: 'transaction',
+            attributes: ['user_id'], // Solo necesitamos el user_id para la validación
+        },
+    });
+
+    // 2. Validamos que la evidencia exista.
+    if (!evidence) {
+        throw new ApiError(httpStatus.NOT_FOUND, 'La evidencia solicitada no existe.');
+    }
+
+    // 3. Validamos los permisos.
+    const transactionOwnerId = evidence.transaction.user_id;
+    if (user.role.role_name === 'employee' && transactionOwnerId !== user.user_id) {
+        throw new ApiError(httpStatus.FORBIDDEN, 'No tienes permiso para acceder a esta evidencia.');
+    }
+
+    // 4. Llamamos al servicio de almacenamiento para generar la URL segura.
+    const signedUrl = await storageService.getSignedUrlForEvidence(evidence.file_path);
+
+    // 5. Devolvemos la URL al controlador.
+    return { downloadUrl: signedUrl };
+};
+
 export default {
     setInitialMonthlyBalance,
     createTransaction,
     getTransactionsList,
     upsertEvidence,
+    cancelTransaction,
+    updateTransactionConcept,
+    getEvidenceDownloadUrl
 };

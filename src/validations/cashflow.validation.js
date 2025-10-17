@@ -2,14 +2,12 @@
 
 import Joi from 'joi';
 
-// CORRECCIÓN: El esquema describe directamente el contenido del dinBody.
 const setMonthlyBalance = Joi.object().keys({
     year: Joi.number().integer().min(2020).max(2100).required(),
     month: Joi.number().integer().min(1).max(12).required(),
     initial_balance: Joi.number().precision(2).positive().required(),
 });
 
-// CORRECCIÓN: Se quitó la envoltura { dinBody: ... }
 const createTransaction = Joi.object().keys({
     subcategory_id: Joi.number().integer().positive().required(),
     transaction_date: Joi.date().iso().required(),
@@ -22,12 +20,21 @@ const createTransaction = Joi.object().keys({
     }).optional(),
 });
 
-// CORRECCIÓN: Se quitó la envoltura { dinBody: ... }
 const getTransactions = Joi.object().keys({
+    // --- Paginación (existente) ---
     page: Joi.number().integer().min(1).optional(),
     limit: Joi.number().integer().min(1).max(100).optional(),
+    
+    // --- Filtro por Usuario (existente, solo para admin) ---
     userId: Joi.number().integer().positive().optional(),
-}).allow(null, ''); // Mantenemos esto para permitir filtros opcionales
+
+    // --- NUEVOS FILTROS ---
+    startDate: Joi.date().iso().optional(),
+    endDate: Joi.date().iso().optional(),
+    categoryId: Joi.number().integer().positive().optional(),
+    subcategoryId: Joi.number().integer().positive().optional(),
+    paymentMethod: Joi.string().trim().optional(),
+}).allow(null, ''); // Permite un body vacío para obtener todos los resultados
 
 const upsertEvidence = Joi.object().keys({
     transactionId: Joi.number().integer().positive().required(),
@@ -38,9 +45,25 @@ const upsertEvidence = Joi.object().keys({
     }).required(),
 });
 
+const cancelTransaction = Joi.object().keys({
+    transactionId: Joi.number().integer().positive().required(),
+});
+
+const updateConcept = Joi.object().keys({
+    transactionId: Joi.number().integer().positive().required(),
+    concept: Joi.string().trim().min(1).required(),
+});
+
+const getEvidenceUrl = Joi.object().keys({
+    evidenceId: Joi.number().integer().positive().required(),
+});
+
 export const cashflowValidation = {
     setMonthlyBalance,
     createTransaction,
     getTransactions,
     upsertEvidence,
+    cancelTransaction,
+    updateConcept,
+    getEvidenceUrl
 };

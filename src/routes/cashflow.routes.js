@@ -54,4 +54,34 @@ router.post(
     cashflowController.upsertEvidence
 );
 
+// Endpoint para cancelar una transacción existente
+router.post(
+    '/transactions/cancel',
+    tramaValidator,       // 1. Valida la estructura de la trama genérica
+    secureEndpoint,       // 2. Verifica el token JWT
+    checkStatefulSession, // 3. Valida la sesión activa en la base de datos
+    validate(cashflowValidation.cancelTransaction), // 4. Valida que el `transactionId` venga en el body
+    cashflowController.cancelTransaction // 5. Llama al controlador para ejecutar la acción
+);
+
+// Endpoint para actualizar el concepto de una transacción
+router.post(
+    '/transactions/concept',
+    tramaValidator,       // 1. Valida la trama genérica
+    secureEndpoint,       // 2. Autentica al usuario vía JWT
+    checkStatefulSession, // 3. Autoriza la sesión activa
+    validate(cashflowValidation.updateConcept), // 4. Valida el `transactionId` y el nuevo `concept`
+    cashflowController.updateConcept // 5. Llama al controlador para ejecutar la acción
+);
+
+// Endpoint para obtener la URL de descarga de una evidencia
+router.post(
+    '/transactions/evidence/download',
+    tramaValidator,       // 1. Valida la trama genérica
+    secureEndpoint,       // 2. Autentica al usuario
+    checkStatefulSession, // 3. Valida la sesión activa
+    validate(cashflowValidation.getEvidenceUrl), // 4. Valida que el `evidenceId` venga en el body
+    cashflowController.getEvidenceUrl // 5. Llama al controlador para ejecutar la acción
+);
+
 export default router;

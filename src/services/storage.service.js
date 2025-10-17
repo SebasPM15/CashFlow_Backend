@@ -52,7 +52,26 @@ const deleteEvidence = async (filePath) => {
     }
 };
 
+/**
+ * Genera una URL firmada y temporal para descargar un archivo de evidencia.
+ * @param {string} filePath - La ruta del archivo en el bucket de Supabase.
+ * @returns {Promise<string>} La URL firmada y de corta duración para la descarga.
+ */
+const getSignedUrlForEvidence = async (filePath) => {
+    const { data, error } = await supabase.storage
+        .from(config.supabase.bucketName)
+        .createSignedUrl(filePath, 60); // La URL expira en 60 segundos
+
+    if (error) {
+        logger.error(`Error al generar la URL firmada para: ${filePath}`, error);
+        throw new ApiError(httpStatus.INTERNAL_SERVER_ERROR, 'No se pudo obtener el enlace de la evidencia.');
+    }
+
+    return data.signedUrl;
+};
+
 export const storageService = {
     uploadEvidence,
     deleteEvidence,
+    getSignedUrlForEvidence
 };

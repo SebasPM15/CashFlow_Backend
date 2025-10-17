@@ -76,9 +76,63 @@ const upsertEvidence = asyncHandler(async (req, res) => {
     sendResponse(res, httpStatus.OK, 'Evidencia actualizada exitosamente.', newEvidence);
 });
 
+const cancelTransaction = asyncHandler(async (req, res) => {
+    // 1. Extraemos los datos necesarios de la petición.
+    const { transactionId } = req.body.dinBody;
+    const user = req.user; // El usuario que realiza la acción, inyectado por el middleware de auth.
+
+    // 2. Llamamos al servicio para que ejecute la lógica de negocio.
+    const reversalTransaction = await cashflowService.cancelTransaction(transactionId, user);
+
+    // 3. Enviamos la respuesta estandarizada.
+    sendResponse(
+        res,
+        httpStatus.OK,
+        'Transacción cancelada y revertida exitosamente.',
+        reversalTransaction
+    );
+});
+
+const updateConcept = asyncHandler(async (req, res) => {
+    // 1. Extraemos los datos validados del cuerpo de la petición.
+    const { transactionId, concept } = req.body.dinBody;
+    const user = req.user; // Obtenemos el usuario autenticado.
+
+    // 2. Llamamos al servicio para que ejecute la lógica de negocio.
+    const updatedTransaction = await cashflowService.updateTransactionConcept(transactionId, concept, user);
+
+    // 3. Enviamos la respuesta estandarizada.
+    sendResponse(
+        res,
+        httpStatus.OK,
+        'El concepto de la transacción ha sido actualizado exitosamente.',
+        updatedTransaction
+    );
+});
+
+const getEvidenceUrl = asyncHandler(async (req, res) => {
+    // 1. Extraemos el ID de la evidencia del cuerpo de la petición.
+    const { evidenceId } = req.body.dinBody;
+    const user = req.user;
+
+    // 2. Llamamos al servicio para que realice la lógica y genere la URL.
+    const evidenceLink = await cashflowService.getEvidenceDownloadUrl(evidenceId, user);
+
+    // 3. Enviamos la URL segura de vuelta al cliente.
+    sendResponse(
+        res,
+        httpStatus.OK,
+        'URL de descarga de la evidencia generada exitosamente.',
+        evidenceLink
+    );
+});
+
 export const cashflowController = {
     setMonthlyBalance,
     createTransaction,
     getTransactions,
-    upsertEvidence, // <-- Exportamos la nueva función
+    upsertEvidence,
+    cancelTransaction,
+    updateConcept,
+    getEvidenceUrl
 };
