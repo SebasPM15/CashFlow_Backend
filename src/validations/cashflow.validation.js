@@ -58,6 +58,10 @@ const getEvidenceUrl = Joi.object().keys({
     evidenceId: Joi.number().integer().positive().required(),
 });
 
+const getSubcategories = Joi.object().keys({
+    categoryId: Joi.number().integer().positive().optional(),
+}).allow(null, '');
+
 export const cashflowValidation = {
     setMonthlyBalance,
     createTransaction,
@@ -65,5 +69,6 @@ export const cashflowValidation = {
     upsertEvidence,
     cancelTransaction,
     updateConcept,
-    getEvidenceUrl
+    getEvidenceUrl,
+    getSubcategories
 };
