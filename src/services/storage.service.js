@@ -57,10 +57,19 @@ const deleteEvidence = async (filePath) => {
  * @param {string} filePath - La ruta del archivo en el bucket de Supabase.
  * @returns {Promise<string>} La URL firmada y de corta duración para la descarga.
  */
-const getSignedUrlForEvidence = async (filePath) => {
+const getSignedUrlForEvidence = async (filePath, mimeType, originalFilename) => {
+    const expiresIn = 60; // URL válida por 60 segundos
+
+    // --- LÓGICA CORREGIDA ---
+    // Si es un PDF, forzamos la descarga USANDO el nombre original.
+    // Si no, no forzamos descarga (undefined) para que se muestre en línea.
+    const downloadOption = mimeType === 'application/pdf' ? originalFilename : undefined;
+
     const { data, error } = await supabase.storage
         .from(config.supabase.bucketName)
-        .createSignedUrl(filePath, 60); // La URL expira en 60 segundos
+        .createSignedUrl(filePath, expiresIn, {
+            download: downloadOption, // <-- AHORA PASAMOS EL NOMBRE O UNDEFINED
+        });
 
     if (error) {
         logger.error(`Error al generar la URL firmada para: ${filePath}`, error);

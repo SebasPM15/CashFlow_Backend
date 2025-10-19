@@ -351,31 +351,34 @@ const updateTransactionConcept = async (transactionId, newConcept, user) => {
 };
 
 const getEvidenceDownloadUrl = async (evidenceId, user) => {
-    // 1. Buscamos el registro de evidencia e incluimos la transacción asociada para verificar el dueño.
+    // 1. Buscamos la evidencia (esto ya incluye original_filename si tu modelo está bien)
     const evidence = await db.Evidence.findOne({
         where: { evidence_id: evidenceId },
         include: {
             model: db.CashFlowTransaction,
             as: 'transaction',
-            attributes: ['user_id'], // Solo necesitamos el user_id para la validación
+            attributes: ['user_id'],
         },
     });
 
-    // 2. Validamos que la evidencia exista.
     if (!evidence) {
         throw new ApiError(httpStatus.NOT_FOUND, 'La evidencia solicitada no existe.');
     }
 
-    // 3. Validamos los permisos.
+    // 2. Validamos permisos (sin cambios)
     const transactionOwnerId = evidence.transaction.user_id;
     if (user.role.role_name === 'employee' && transactionOwnerId !== user.user_id) {
         throw new ApiError(httpStatus.FORBIDDEN, 'No tienes permiso para acceder a esta evidencia.');
     }
 
-    // 4. Llamamos al servicio de almacenamiento para generar la URL segura.
-    const signedUrl = await storageService.getSignedUrlForEvidence(evidence.file_path);
+    // 3. CORRECCIÓN: Llamamos al servicio de almacenamiento pasándole los TRES argumentos.
+    const signedUrl = await storageService.getSignedUrlForEvidence(
+        evidence.file_path,         // El path del archivo en Supabase
+        evidence.mime_type,        // El tipo MIME
+        evidence.original_filename // <-- EL NOMBRE ORIGINAL
+    );
 
-    // 5. Devolvemos la URL al controlador.
+    // 4. Devolvemos la URL (sin cambios)
     return { downloadUrl: signedUrl };
 };
 
