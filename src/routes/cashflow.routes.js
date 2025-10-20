@@ -13,6 +13,16 @@ const router = Router();
 // Rutas Protegidas del Módulo de Flujo de Caja
 // =================================================================
 
+// Endpoint para listar los métodos de pago activos (ADMIN y EMPLEADO)
+router.post(
+    '/payment-methods/list',
+    tramaValidator,
+    secureEndpoint,
+    checkStatefulSession,
+    validate(cashflowValidation.getPaymentMethods), // Valida el body (aunque esté vacío)
+    cashflowController.getPaymentMethods
+);
+
 // Endpoint para establecer el saldo inicial del mes (SOLO ADMIN)
 router.post(
     '/monthly-balance',

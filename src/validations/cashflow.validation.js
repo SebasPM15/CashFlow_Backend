@@ -2,6 +2,8 @@
 
 import Joi from 'joi';
 
+const getPaymentMethods = Joi.object().keys({}).allow(null, '');
+
 const setMonthlyBalance = Joi.object().keys({
     year: Joi.number().integer().min(2020).max(2100).required(),
     month: Joi.number().integer().min(1).max(12).required(),
@@ -11,12 +13,12 @@ const setMonthlyBalance = Joi.object().keys({
 const createTransaction = Joi.object().keys({
     subcategory_id: Joi.number().integer().positive().required(),
     transaction_date: Joi.date().iso().required(),
-    payment_method: Joi.string().trim().min(1).required(),
+    method_id: Joi.number().integer().positive().required(),
     concept: Joi.string().trim().min(1).required(),
     amount: Joi.number().precision(2).positive().required(),
     evidence: Joi.object({
         file_name: Joi.string().required(),
-        file_data: Joi.string().base64().required(),
+        file_data: Joi.string().uri({ scheme: ['data'] }).required(),
     }).optional(),
 });
 
@@ -40,7 +42,6 @@ const upsertEvidence = Joi.object().keys({
     transactionId: Joi.number().integer().positive().required(),
     evidence: Joi.object({
         file_name: Joi.string().required(),
-        // CORRECCIÓN: Cambiamos .base64() por .uri() para aceptar el prefijo
         file_data: Joi.string().uri({ scheme: ['data'] }).required(),
     }).required(),
 });
@@ -63,6 +64,7 @@ const getSubcategories = Joi.object().keys({
 }).allow(null, '');
 
 export const cashflowValidation = {
+    getPaymentMethods,
     setMonthlyBalance,
     createTransaction,
     getTransactions,

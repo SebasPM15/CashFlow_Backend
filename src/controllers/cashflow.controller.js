@@ -11,6 +11,21 @@ import cashflowService from '../services/cashflow.service.js';
  */
 
 /**
+ * Maneja la petición para listar los métodos de pago activos.
+ */
+const getPaymentMethods = asyncHandler(async (req, res) => {
+    // No se necesita req.body ni req.user, solo llama al servicio.
+    const paymentMethods = await cashflowService.getPaymentMethodsList();
+
+    sendResponse(
+        res,
+        httpStatus.OK,
+        'Métodos de pago obtenidos exitosamente.',
+        paymentMethods
+    );
+});
+
+/**
  * Maneja la petición para establecer el saldo inicial del mes.
  */
 const setMonthlyBalance = asyncHandler(async (req, res) => {
@@ -128,6 +143,7 @@ const getEvidenceUrl = asyncHandler(async (req, res) => {
 });
 
 export const cashflowController = {
+    getPaymentMethods,
     setMonthlyBalance,
     createTransaction,
     getTransactions,

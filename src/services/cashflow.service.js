@@ -14,6 +14,18 @@ import { storageService } from './storage.service.js';
  */
 
 /**
+ * Obtiene la lista de métodos de pago activos.
+ * @returns {Promise<Array<PaymentMethod>>}
+ */
+const getPaymentMethodsList = async () => {
+    const paymentMethods = await db.PaymentMethod.findAll({
+        where: { is_active: true },
+        order: [['method_name', 'ASC']],
+    });
+    return paymentMethods;
+};
+
+/**
  * Establece o actualiza el saldo inicial para un mes y año específicos.
  */
 const setInitialMonthlyBalance = async (balanceData) => {
@@ -24,11 +36,16 @@ const setInitialMonthlyBalance = async (balanceData) => {
         defaults: { year, month, initial_balance: initialBalance },
     });
 
+    // Si 'created' es falso, significa que el registro ya existía.
     if (!created) {
-        monthlyBalance.initial_balance = initialBalance;
-        await monthlyBalance.save();
+        // Lanzamos un error de negocio claro.
+        throw new ApiError(
+            httpStatus.CONFLICT, // 409 Conflict es el código ideal para esto.
+            'El saldo inicial para este mes ya ha sido configurado y no puede ser modificado.'
+        );
     }
 
+    // Si 'created' es true, la operación fue exitosa y devolvemos el nuevo registro.
     return monthlyBalance;
 };
 
@@ -36,14 +53,22 @@ const setInitialMonthlyBalance = async (balanceData) => {
  * Crea una nueva transacción de flujo de caja, subiendo la evidencia a Supabase si se proporciona.
  */
 const createTransaction = async (transactionData, userId) => {
-    const { subcategory_id, transaction_date, payment_method, concept, amount, evidence } = transactionData;
+    const { subcategory_id, transaction_date, method_id, concept, amount, evidence } = transactionData;
     let subcategory;
 
     const newTransaction = await db.sequelize.transaction(async (t) => {
-        // --- 1. Validaciones Iniciales (sin cambios) ---
+        // --- 1. Validaciones Iniciales ---
         subcategory = await db.Subcategory.findByPk(subcategory_id, { transaction: t });
         if (!subcategory) {
             throw new ApiError(httpStatus.NOT_FOUND, 'La subcategoría especificada no existe.');
+        }
+
+        const paymentMethod = await db.PaymentMethod.findOne({
+            where: { method_id, is_active: true },
+            transaction: t,
+        });
+        if (!paymentMethod) {
+            throw new ApiError(httpStatus.BAD_REQUEST, 'El método de pago no es válido o no está activo.');
         }
 
         const date = new Date(transaction_date);
@@ -74,13 +99,13 @@ const createTransaction = async (transactionData, userId) => {
 
         // --- 3. Creación del Nuevo Registro (sin cambios) ---
         const createdTransaction = await db.CashFlowTransaction.create({
-            user_id: userId, 
-            subcategory_id, 
-            transaction_date: date, 
-            payment_method, 
-            concept, 
-            debit, 
-            credit, 
+            user_id: userId,
+            subcategory_id,
+            method_id,
+            transaction_date: date,
+            concept,
+            debit,
+            credit,
             resulting_balance: resultingBalance,
         }, { transaction: t });
 
@@ -104,9 +129,9 @@ const createTransaction = async (transactionData, userId) => {
             const filePath = await storageService.uploadEvidence(buffer, evidence.file_name, userId);
             await db.Evidence.create({
                 transaction_id: createdTransaction.transaction_id,
-                file_path: filePath, 
-                original_filename: evidence.file_name, 
-                mime_type, 
+                file_path: filePath,
+                original_filename: evidence.file_name,
+                mime_type,
                 file_size_bytes: buffer.length,
             }, { transaction: t });
         }
@@ -143,7 +168,7 @@ const getTransactionsList = async (user, queryParams) => {
         endDate,
         categoryId,
         subcategoryId,
-        paymentMethod,
+        methodId,
     } = queryParams;
 
     const offset = (page - 1) * limit;
@@ -159,7 +184,7 @@ const getTransactionsList = async (user, queryParams) => {
     }
 
     // Añadir filtros directos si existen
-    if (paymentMethod) whereClause.payment_method = paymentMethod;
+    if (methodId) whereClause.methodId = methodId;
     if (subcategoryId) whereClause.subcategory_id = subcategoryId;
 
     // CORRECCIÓN: Se mueve el filtro de categoryId a la cláusula principal
@@ -167,7 +192,7 @@ const getTransactionsList = async (user, queryParams) => {
     if (categoryId) {
         whereClause['$subcategory.category_id$'] = categoryId;
     }
-    
+
     // Filtro por rango de fechas
     if (startDate && endDate) {
         whereClause.transaction_date = { [Op.between]: [new Date(startDate), new Date(endDate)] };
@@ -193,6 +218,11 @@ const getTransactionsList = async (user, queryParams) => {
                     as: 'category',
                     attributes: ['category_name'],
                 },
+            },
+            {
+                model: db.PaymentMethod,
+                as: 'paymentMethod',
+                attributes: ['method_name'],
             },
         ],
         limit,
@@ -290,13 +320,13 @@ const cancelTransaction = async (transactionId, user) => {
             limit: 1,
             transaction: t,
         });
-        
+
         // Si no hay ninguna transacción activa, el saldo previo es el inicial del mes.
         // Esto cubre el caso de que se cancele la única transacción existente.
         const date = new Date(originalTransaction.transaction_date);
-        const monthlyBalance = await db.MonthlyBalance.findOne({ 
-            where: { year: date.getFullYear(), month: date.getMonth() + 1 }, 
-            transaction: t 
+        const monthlyBalance = await db.MonthlyBalance.findOne({
+            where: { year: date.getFullYear(), month: date.getMonth() + 1 },
+            transaction: t
         });
 
         const previousBalance = lastKnownTransaction
@@ -306,15 +336,15 @@ const cancelTransaction = async (transactionId, user) => {
         // CORRECCIÓN: Se convierten a número los valores de débito/crédito para evitar el NaN.
         const reversalDebit = parseFloat(originalTransaction.credit);
         const reversalCredit = parseFloat(originalTransaction.debit);
-        
+
         // El cálculo ahora es seguro y siempre producirá un número.
         const resultingBalance = previousBalance + reversalCredit - reversalDebit;
 
         const reversalTransaction = await db.CashFlowTransaction.create({
             user_id: user.user_id,
             subcategory_id: originalTransaction.subcategory_id,
+            method_id: originalTransaction.method_id,
             transaction_date: new Date(),
-            payment_method: 'SYSTEM_REVERSAL',
             concept: `Reversión de transacción #${originalTransaction.transaction_id}: ${originalTransaction.concept}`,
             debit: reversalDebit,
             credit: reversalCredit,
@@ -342,7 +372,7 @@ const updateTransactionConcept = async (transactionId, newConcept, user) => {
 
     // 4. Actualizamos el campo 'concept'.
     transaction.concept = newConcept;
-    
+
     // 5. Guardamos el cambio en la base de datos.
     await transaction.save();
 
@@ -383,6 +413,7 @@ const getEvidenceDownloadUrl = async (evidenceId, user) => {
 };
 
 export default {
+    getPaymentMethodsList,
     setInitialMonthlyBalance,
     createTransaction,
     getTransactionsList,

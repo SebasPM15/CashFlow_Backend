@@ -19,13 +19,14 @@ const CashFlowTransaction = sequelize.define('CashFlowTransaction', {
         allowNull: false,
         // La relación se definirá en src/models/index.js
     },
+    method_id: {
+        type: DataTypes.INTEGER,
+        allowNull: false,
+        // La relación se definirá en src/models/index.js
+    },
     transaction_date: {
         type: DataTypes.DATE, // Mapea a TIMESTAMPTZ para precisión de fecha y hora
         allowNull: false,
-    },
-    payment_method: {
-        type: DataTypes.STRING(50),
-        allowNull: false, // Ej: "Transferencia", "Efectivo", "Cheque"
     },
     concept: {
         type: DataTypes.TEXT,

@@ -11,6 +11,7 @@ import Subcategory from './subcategory.model.js';
 import MonthlyBalance from './monthlyBalance.model.js';
 import CashFlowTransaction from './cashFlowTransaction.model.js';
 import Evidence from './evidence.model.js';
+import PaymentMethod from './paymentMethod.model.js';
 
 const db = {};
 
@@ -23,6 +24,7 @@ db.Subcategory = Subcategory;
 db.MonthlyBalance = MonthlyBalance;
 db.CashFlowTransaction = CashFlowTransaction;
 db.Evidence = Evidence;
+db.PaymentMethod = PaymentMethod;
 
 // ===================================
 // === DEFINICIÓN DE ASOCIACIONES ====
@@ -51,6 +53,16 @@ db.CashFlowTransaction.belongsTo(db.User, { foreignKey: 'user_id', as: 'user' })
 // Una Subcategoría está en muchas Transacciones (Subcategory.subcategory_id -> CashFlowTransaction.subcategory_id)
 db.Subcategory.hasMany(db.CashFlowTransaction, { foreignKey: 'subcategory_id', as: 'transactions' });
 db.CashFlowTransaction.belongsTo(db.Subcategory, { foreignKey: 'subcategory_id', as: 'subcategory' });
+
+// Un Método de Pago está en muchas Transacciones (PaymentMethod.method_id -> CashFlowTransaction.method_id)
+db.PaymentMethod.hasMany(db.CashFlowTransaction, {
+    foreignKey: 'method_id',
+    as: 'transactions',
+});
+db.CashFlowTransaction.belongsTo(db.PaymentMethod, {
+    foreignKey: 'method_id',
+    as: 'paymentMethod',
+});
 
 // Una Transacción puede tener muchas Evidencias (CashFlowTransaction.transaction_id -> Evidence.transaction_id)
 // Se usa hasMany porque el FK en la tabla 'evidences' no es único.
