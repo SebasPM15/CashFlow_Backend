@@ -76,6 +76,7 @@ const listAllUsers = async (queryParams) => {
  * Actualiza el estado (activo/inactivo) de un usuario.
  */
 const updateUserStatus = async (adminUserId, targetUserId, isActive) => {
+    // 1. Validaciones iniciales
     if (adminUserId === targetUserId) {
         throw new ApiError(httpStatus.BAD_REQUEST, 'Un administrador no puede desactivarse a sí mismo.');
     }
@@ -85,10 +86,17 @@ const updateUserStatus = async (adminUserId, targetUserId, isActive) => {
         throw new ApiError(httpStatus.NOT_FOUND, 'El usuario que intentas modificar no existe.');
     }
 
+    // --- 2. VALIDACIÓN DE ESTADO ACTUAL ---
+    if (userToUpdate.is_active === isActive) {
+        const status = isActive ? 'activo' : 'inactivo';
+        throw new ApiError(httpStatus.BAD_REQUEST, `El usuario ya se encuentra ${status}.`);
+    }
+
+    // 3. Actualización
     userToUpdate.is_active = isActive;
     await userToUpdate.save();
 
-    // Si se desactiva un usuario, cerramos todas sus sesiones por seguridad.
+    // 4. Cierre de sesiones si se desactiva
     if (isActive === false) {
         await db.Session.destroy({ where: { user_id: targetUserId } });
     }
@@ -100,6 +108,7 @@ const updateUserStatus = async (adminUserId, targetUserId, isActive) => {
  * Actualiza el rol de un usuario.
  */
 const updateUserRole = async (targetUserId, newRoleId) => {
+    // 1. Validaciones iniciales 
     const userToUpdate = await db.User.findByPk(targetUserId);
     if (!userToUpdate) {
         throw new ApiError(httpStatus.NOT_FOUND, 'El usuario que intentas modificar no existe.');
@@ -110,6 +119,12 @@ const updateUserRole = async (targetUserId, newRoleId) => {
         throw new ApiError(httpStatus.BAD_REQUEST, 'El rol especificado no es válido.');
     }
 
+    // --- 2. VALIDACIÓN DE ROL ACTUAL ---
+    if (userToUpdate.role_id === newRoleId) {
+        throw new ApiError(httpStatus.BAD_REQUEST, 'El usuario ya tiene asignado ese rol.');
+    }
+
+    // 3. Actualización 
     userToUpdate.role_id = newRoleId;
     await userToUpdate.save();
 

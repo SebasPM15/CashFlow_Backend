@@ -2,33 +2,25 @@
 
 import Joi from 'joi';
 
-const getProfile = {
-    dinBody: Joi.object().keys({
+const getProfile = Joi.object().keys({
         userId: Joi.number().integer().positive().optional(),
-    }).allow(null, ''), // Permitir un dinBody vacío
-};
+    }).allow(null, '');
 
-const listUsers = {
-    dinBody: Joi.object().keys({
+const listUsers = Joi.object().keys({
         page: Joi.number().integer().min(1).optional(),
         limit: Joi.number().integer().min(1).max(100).optional(),
         isActive: Joi.boolean().optional(),
-    }).allow(null, ''),
-};
-
-const updateStatus = {
-    dinBody: Joi.object().keys({
+    }).allow(null, '');
+    
+const updateStatus = Joi.object().keys({
         userId: Joi.number().integer().positive().required(),
         isActive: Joi.boolean().required(),
-    }),
-};
+    });
 
-const updateRole = {
-    dinBody: Joi.object().keys({
+const updateRole = Joi.object().keys({
         userId: Joi.number().integer().positive().required(),
         roleId: Joi.number().integer().positive().required(),
-    }),
-};
+    });
 
 export const userValidation = {
     getProfile,
