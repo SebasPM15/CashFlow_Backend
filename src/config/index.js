@@ -104,7 +104,15 @@ const config = {
         serviceKey: process.env.SUPABASE_SERVICE_KEY,
         bucketName: 'evidence', // Definimos el nombre del bucket aquí
     },
+    slack: {
+        webhookUrl: process.env.SLACK_WEBHOOK_URL,
+    }
 };
+
+// Asegúrate de validarla
+if (!config.slack.webhookUrl) {
+    throw new Error('FATAL ERROR: SLACK_WEBHOOK_URL is not defined.');
+}
 
 // Congela el objeto para hacerlo inmutable, previniendo modificaciones accidentales
 export default Object.freeze(config);

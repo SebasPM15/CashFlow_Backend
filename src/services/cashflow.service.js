@@ -7,6 +7,7 @@ import { ApiError } from '../utils/ApiError.js';
 import emailService from './email/email.service.js';
 import logger from '../utils/logger.js';
 import { storageService } from './storage.service.js';
+import { notificationService } from './notification.service.js';
 
 /**
  * Servicio para gestionar la lógica de negocio del flujo de caja.
@@ -55,15 +56,23 @@ const setInitialMonthlyBalance = async (balanceData) => {
 const createTransaction = async (transactionData, userId) => {
     const { subcategory_id, transaction_date, method_id, concept, amount, evidence } = transactionData;
     let subcategory;
+    let paymentMethod;
 
     const newTransaction = await db.sequelize.transaction(async (t) => {
         // --- 1. Validaciones Iniciales ---
-        subcategory = await db.Subcategory.findByPk(subcategory_id, { transaction: t });
+        subcategory = await db.Subcategory.findByPk(subcategory_id, {
+            include: [{
+                model: db.Category,
+                as: 'category',
+                attributes: ['category_name'],
+            }],
+            transaction: t
+        });
         if (!subcategory) {
             throw new ApiError(httpStatus.NOT_FOUND, 'La subcategoría especificada no existe.');
         }
 
-        const paymentMethod = await db.PaymentMethod.findOne({
+        paymentMethod = await db.PaymentMethod.findOne({
             where: { method_id, is_active: true },
             transaction: t,
         });
@@ -143,14 +152,37 @@ const createTransaction = async (transactionData, userId) => {
     try {
         const user = await db.User.findByPk(userId);
         const admin = await db.User.findOne({ include: { model: db.Role, as: 'role', where: { role_name: 'admin' } } });
-        if (admin && user) {
-            emailService.sendNewTransactionNotification(admin.email, {
+
+        if (user) {
+            // 1. Preparamos el objeto 'details' (DRY)
+            const details = {
                 userFullName: `${user.first_name} ${user.last_name}`,
-                concept: newTransaction.concept, amount, type: subcategory.transaction_type, transactionDate: newTransaction.transaction_date,
-            });
+                concept: newTransaction.concept,
+                amount,
+                type: subcategory.transaction_type,
+                transactionDate: newTransaction.transaction_date,
+                categoryName: subcategory.category.category_name,
+                subcategoryName: subcategory.subcategory_name,
+                methodName: paymentMethod.method_name,
+            };
+
+            // 2. Notificación por Email (si el admin existe)
+            if (admin) {
+                emailService.sendNewTransactionNotification(admin.email, details);
+            } else {
+                logger.warn('No se encontró un usuario admin para enviar la notificación por email.');
+            }
+
+            // 3. NUEVO: Notificación por Slack (Fire-and-Forget)
+            // Esta función está diseñada para no lanzar errores.
+            await notificationService.sendNewTransactionNotification(details);
+
+        } else {
+            logger.warn('No se encontró el usuario que creó la transacción, no se enviarán notificaciones.');
         }
     } catch (error) {
-        logger.error('Error al iniciar el envío de notificación de transacción.', { error: error.message });
+        // Este catch ahora captura errores en la *preparación* (ej. db.User.findByPk)
+        logger.error('Error al preparar las notificaciones post-transacción.', { error: error.message });
     }
 
     return newTransaction;
