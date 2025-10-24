@@ -26,7 +26,7 @@ const getTransactions = Joi.object().keys({
     // --- Paginación (existente) ---
     page: Joi.number().integer().min(1).optional(),
     limit: Joi.number().integer().min(1).max(100).optional(),
-    
+
     // --- Filtro por Usuario (existente, solo para admin) ---
     userId: Joi.number().integer().positive().optional(),
 
@@ -63,6 +63,11 @@ const getSubcategories = Joi.object().keys({
     categoryId: Joi.number().integer().positive().optional(),
 }).allow(null, '');
 
+const getMonthlyBalance = Joi.object().keys({
+    year: Joi.number().integer().min(2020).max(2100).required(),
+    month: Joi.number().integer().min(1).max(12).required(),
+});
+
 export const cashflowValidation = {
     getPaymentMethods,
     setMonthlyBalance,
@@ -72,5 +77,6 @@ export const cashflowValidation = {
     cancelTransaction,
     updateConcept,
     getEvidenceUrl,
-    getSubcategories
+    getSubcategories,
+    getMonthlyBalance
 };

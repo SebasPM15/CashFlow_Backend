@@ -142,6 +142,22 @@ const getEvidenceUrl = asyncHandler(async (req, res) => {
     );
 });
 
+/**
+ * Maneja la petición para obtener el saldo inicial de un mes específico.
+ */
+const getMonthlyBalance = asyncHandler(async (req, res) => {
+    const { year, month } = req.body.dinBody; // Extraemos del dinBody
+
+    const monthlyBalance = await cashflowService.getMonthlyBalance({ year, month });
+
+    sendResponse(
+        res,
+        httpStatus.OK,
+        'Saldo inicial obtenido exitosamente.',
+        monthlyBalance
+    );
+});
+
 export const cashflowController = {
     getPaymentMethods,
     setMonthlyBalance,
@@ -150,5 +166,6 @@ export const cashflowController = {
     upsertEvidence,
     cancelTransaction,
     updateConcept,
-    getEvidenceUrl
+    getEvidenceUrl,
+    getMonthlyBalance
 };
