@@ -12,14 +12,16 @@ class EmailService {
             host: config.email.host,
             port: config.email.port,
             secure: false,
-            requireTLS: true, // Force STARTTLS
+            requireTLS: true,
             auth: config.email.auth,
+            debug: true, // <-- Añadir para debug
+            logger: true // <-- Añadir para debug
         });
 
         this._sendMail = this._sendMail.bind(this);
 
         const circuitBreakerOptions = {
-            timeout: 500000,
+            timeout: 5000,
             errorThresholdPercentage: 50,
             resetTimeout: 30000,
         };
