@@ -19,7 +19,7 @@ class EmailService {
         this._sendMail = this._sendMail.bind(this);
 
         const circuitBreakerOptions = {
-            timeout: 5000,
+            timeout: 500000,
             errorThresholdPercentage: 50,
             resetTimeout: 30000,
         };
