@@ -94,4 +94,14 @@ router.post(
     cashflowController.getEvidenceUrl // 5. Llama al controlador para ejecutar la acción
 );
 
+router.post(
+    '/monthly-balance/get', // Nueva ruta para la consulta
+    tramaValidator,
+    secureEndpoint,
+    checkStatefulSession,
+    authorizeRole('admin'), // Descomenta si solo el admin puede verlo
+    validate(cashflowValidation.getMonthlyBalance),
+    cashflowController.getMonthlyBalance
+);
+
 export default router;

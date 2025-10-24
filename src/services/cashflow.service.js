@@ -444,6 +444,28 @@ const getEvidenceDownloadUrl = async (evidenceId, user) => {
     return { downloadUrl: signedUrl };
 };
 
+/**
+ * Obtiene el registro del saldo inicial para un mes y año específicos.
+ * @param {object} queryData - Datos para la búsqueda.
+ * @param {number} queryData.year - El año.
+ * @param {number} queryData.month - El mes.
+ * @returns {Promise<db.MonthlyBalance | null>} El registro del saldo o null si no existe.
+ */
+const getMonthlyBalance = async (queryData) => {
+    const { year, month } = queryData;
+
+    const monthlyBalance = await db.MonthlyBalance.findOne({
+        where: { year, month },
+    });
+
+    // Lanzamos un error si no se encuentra, para dar feedback claro.
+    if (!monthlyBalance) {
+        throw new ApiError(httpStatus.NOT_FOUND, `No se encontró un saldo inicial configurado para ${month}/${year}.`);
+    }
+
+    return monthlyBalance;
+};
+
 export default {
     getPaymentMethodsList,
     setInitialMonthlyBalance,
@@ -452,5 +474,6 @@ export default {
     upsertEvidence,
     cancelTransaction,
     updateTransactionConcept,
-    getEvidenceDownloadUrl
+    getEvidenceDownloadUrl,
+    getMonthlyBalance
 };
