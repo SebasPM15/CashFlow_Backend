@@ -1,5 +1,5 @@
 import nodemailer from 'nodemailer';
-import opossum from 'opossum';
+// import opossum from 'opossum'; // <--- Eliminado
 import config from '../../config/index.js';
 import logger from '../../utils/logger.js';
 import { createVerificationEmail } from './verification.template.js';
@@ -11,36 +11,33 @@ class EmailService {
         this.transporter = nodemailer.createTransport({
             host: config.email.host,
             port: config.email.port,
-            secure: false,
-            requireTLS: true,
-            auth: config.email.auth,
-            debug: true, // <-- Añadir para debug
-            logger: true // <-- Añadir para debug
+            secure: false, // port 587 requires secure: false for STARTTLS
+            requireTLS: true, // Force STARTTLS
+            auth: config.email.auth, // user and pass (App Password)
+            debug: true, // Mantenemos el debug por ahora
+            logger: true // Mantenemos el logger por ahora
         });
 
+        // Binding _sendMail sigue siendo útil si lo llamaras de otra forma, lo dejamos.
         this._sendMail = this._sendMail.bind(this);
 
-        const circuitBreakerOptions = {
-            timeout: 5000,
-            errorThresholdPercentage: 50,
-            resetTimeout: 30000,
-        };
-
-        // --- Se añade la palabra 'new' ---
-        this.circuitBreaker = new opossum(this._sendMail, circuitBreakerOptions);
-
-        this.circuitBreaker.on('open', () => logger.error('[EmailService] Circuit Breaker opened.'));
-        this.circuitBreaker.on('close', () => logger.info('[EmailService] Circuit Breaker closed.'));
-        this.circuitBreaker.on('failure', (error) => logger.warn('[EmailService] Email sending failed.', { error: error.message }));
+        // --- LÓGICA DEL CIRCUIT BREAKER ELIMINADA ---
+        // const circuitBreakerOptions = { ... };
+        // this.circuitBreaker = new opossum(this._sendMail, circuitBreakerOptions);
+        // this.circuitBreaker.on('open', ...);
+        // this.circuitBreaker.on('close', ...);
+        // this.circuitBreaker.on('failure', ...);
+        // --- FIN DE LA ELIMINACIÓN ---
     }
 
     /** @private */
     async _sendMail(mailOptions) {
+        // Esta función ahora solo es llamada por _sendSecure
         await this.transporter.sendMail(mailOptions);
     }
 
     /**
-     * Envía un correo de forma segura a través del Circuit Breaker.
+     * Envía un correo directamente.
      * @private
      */
     async _sendSecure(to, template) {
@@ -48,19 +45,23 @@ class EmailService {
             logger.info(`Intentando enviar email de tipo '${template.subject}' a: ${to}`);
             const mailOptions = { from: config.email.from, to, ...template };
 
-            await this.circuitBreaker.fire(mailOptions);
+            // --- CAMBIO CLAVE: Llamada directa a _sendMail ---
+            await this._sendMail(mailOptions);
+
             logger.info(`Email '${template.subject}' enviado exitosamente a: ${to}`);
         } catch (error) {
-            logger.error(`No se pudo enviar el email a ${to}. Causa: ${error.message}`);
+            // Si hay un timeout u otro error, se registrará aquí.
+            logger.error(`No se pudo enviar el email a ${to}. Causa: ${error.message}`, { error }); // Logueamos el error completo
         }
     }
 
     // =================================================================
-    // Métodos Públicos (API del Servicio)
+    // Métodos Públicos (API del Servicio) - Sin cambios aquí
     // =================================================================
 
     async sendVerificationEmail(to, code) {
         const template = createVerificationEmail({ verificationCode: code });
+        // Llama a _sendSecure, que ahora es directo
         await this._sendSecure(to, template);
     }
 
