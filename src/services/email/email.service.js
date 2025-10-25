@@ -12,6 +12,9 @@ class EmailService {
             host: config.email.host,
             port: config.email.port,
             auth: config.email.auth,
+            tls: {
+                ciphers:'SSLv3'
+            }
         });
 
         this._sendMail = this._sendMail.bind(this);
