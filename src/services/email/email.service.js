@@ -1,121 +1,84 @@
-// src/config/index.js
+// 1. CAMBIO: Importamos 'sgMail' y quitamos 'nodemailer'
+import sgMail from '@sendgrid/mail';
+import opossum from 'opossum';
+import config from '../../config/index.js';
+import logger from '../../utils/logger.js';
+import { createVerificationEmail } from './verification.template.js';
+import { createPasswordResetEmail } from './passwordReset.template.js';
+import { createTransactionNotificationEmail } from './transactionNotification.template.js';
 
-import dotenv from 'dotenv';
-import { cleanEnv, str, port, num, url, bool } from 'envalid';
+class EmailService {
+    constructor() {
+        // 2. CAMBIO: Quitamos 'nodemailer.createTransport' y
+        //    configuramos la API Key de SendGrid.
+        //    Tu config ahora debe pasar 'config.email.apiKey'
+        sgMail.setApiKey(config.email.apiKey);
 
-// Carga el archivo .env en process.env
-dotenv.config();
+        this._sendMail = this._sendMail.bind(this);
 
-// Valida y limpia las variables de entorno usando envalid
-const env = cleanEnv(process.env, {
-    // APP
-    NODE_ENV: str({ choices: ['development', 'production', 'test'], default: 'development' }),
-    APP_NAME: str({ default: 'CashFlow-API' }),
-    APP_VERSION: str({ default: '1.0.0' }),
+        const circuitBreakerOptions = {
+            timeout: 5000,
+            errorThresholdPercentage: 50,
+            resetTimeout: 30000,
+        };
 
-    // SERVER
-    HOST: str({ default: '0.0.0.0' }),
-    PORT: port({ default: 3000 }),
+        this.circuitBreaker = new opossum(this._sendMail, circuitBreakerOptions);
 
-    // DATABASE
-    DATABASE_URL: url({ desc: 'PostgreSQL connection string' }),
-    DB_SSL_ENABLED: bool({ default: true }),
-    DB_SSL_REJECT_UNAUTHORIZED: bool({ default: false }),
-    DB_POOL_MAX: num({ default: 10 }),
-    DB_POOL_MIN: num({ default: 0 }),
-    DB_POOL_ACQUIRE_MS: num({ default: 30000 }),
-    DB_POOL_IDLE_MS: num({ default: 10000 }),
-    DB_POOL_EVICT_MS: num({ default: 10000 }),
-    PG_STATEMENT_TIMEOUT_MS: num({ default: 10000 }),
-    PG_IDLE_XACT_TIMEOUT_MS: num({ default: 30000 }),
-
-    // JWT
-    JWT_SECRET: str({ desc: 'Secret key for signing JWTs' }),
-    JWT_ISSUER: str({ default: 'CashFlowApp' }),
-    JWT_AUDIENCE: str({ default: 'CashFlowUsers' }),
-    JWT_ACCESS_EXPIRES_IN: str({ default: '15m' }),
-    JWT_REFRESH_EXPIRES_IN: str({ default: '7d' }),
-
-    // LOGGING
-    LOG_SENSITIVE_FIELDS: str({
-        default: 'password.full,password_hash.full,verification_code.full,email.email,firstName.name,lastName.name,phone_number.phone,accessToken.full,refreshToken.full',
-        desc: 'Campos a enmascarar en los logs, formato: field1.strategy,field2.strategy'
-    }),
-
-    // --- CAMBIO: EMAIL SERVICE (SendGrid) ---
-    // Se eliminan EMAIL_HOST, PORT, USER, y PASS
-    SENDGRID_API_KEY: str({ desc: 'API Key for SendGrid' }),
-    EMAIL_FROM: str({ default: '"CashFlow App" <no-reply@cashflow.com>' }),
-
-    // --- AÑADIDO: SUPABASE ---
-    SUPABASE_URL: url({ desc: 'Supabase project URL' }),
-    SUPABASE_SERVICE_KEY: str({ desc: 'Supabase service role key' }),
-    SUPABASE_BUCKET_NAME: str({ default: 'evidence' }),
-
-    // --- AÑADIDO: SLACK ---
-    SLACK_WEBHOOK_URL: url({ desc: 'Slack incoming webhook URL' }),
-});
-
-// Organiza la configuración en un objeto anidado y estructurado
-const config = {
-    app: {
-        env: env.NODE_ENV,
-        name: env.APP_NAME,
-        version: env.APP_VERSION,
-    },
-    server: {
-        host: env.HOST,
-        port: env.PORT,
-    },
-    database: {
-        url: env.DATABASE_URL,
-        ssl: {
-            enabled: env.DB_SSL_ENABLED,
-            rejectUnauthorized: env.DB_SSL_REJECT_UNAUTHORIZED,
-        },
-        pool: {
-            max: env.DB_POOL_MAX,
-            min: env.DB_POOL_MIN,
-            acquire: env.DB_POOL_ACQUIRE_MS,
-            idle: env.DB_POOL_IDLE_MS,
-            evict: env.DB_POOL_EVICT_MS,
-        },
-        options: {
-            statementTimeout: env.PG_STATEMENT_TIMEOUT_MS,
-            idleTransactionTimeout: env.PG_IDLE_XACT_TIMEOUT_MS,
-        }
-    },
-    jwt: {
-        secret: env.JWT_SECRET,
-        issuer: env.JWT_ISSUER,
-        audience: env.JWT_AUDIENCE,
-        accessExpiresIn: env.JWT_ACCESS_EXPIRES_IN,
-        refreshExpiresIn: env.JWT_REFRESH_EXPIRES_IN,
-    },
-    logging: {
-        level: env.isProduction ? 'info' : 'debug',
-        sensitiveFields: env.LOG_SENSITIVE_FIELDS,
-    },
-    // --- CAMBIO: Objeto 'email' actualizado para SendGrid ---
-    email: {
-        apiKey: env.SENDGRID_API_KEY,
-        from: env.EMAIL_FROM,
-    },
-    // --- CAMBIO: Objeto 'supabase' ahora usa 'env' ---
-    supabase: {
-        url: env.SUPABASE_URL,
-        serviceKey: env.SUPABASE_SERVICE_KEY,
-        bucketName: env.SUPABASE_BUCKET_NAME,
-    },
-    // --- CAMBIO: Objeto 'slack' ahora usa 'env' ---
-    slack: {
-        webhookUrl: env.SLACK_WEBHOOK_URL,
+        this.circuitBreaker.on('open', () => logger.error('[EmailService] Circuit Breaker opened.'));
+        this.circuitBreaker.on('close', () => logger.info('[EmailService] Circuit Breaker closed.'));
+        this.circuitBreaker.on('failure', (error) => logger.warn('[EmailService] Email sending failed.', { error: error.message }));
     }
-};
 
-// --- ELIMINADO ---
-// Ya no necesitas esta validación manual, envalid se encarga de esto.
-// if (!config.slack.webhookUrl) { ... }
+    /** @private */
+    async _sendMail(mailOptions) {
+        // 3. CAMBIO: Reemplazamos 'transporter.sendMail'
+        //    por el método del SDK de SendGrid.
+        await sgMail.send(mailOptions);
+    }
 
-// Congela el objeto para hacerlo inmutable, previniendo modificaciones accidentales
-export default Object.freeze(config);
+    /**
+     * Envía un correo de forma segura a través del Circuit Breaker.
+     * @private
+     */
+    async _sendSecure(to, template) {
+        try {
+            logger.info(`Intentando enviar email de tipo '${template.subject}' a: ${to}`);
+            
+            // ESTO NO CAMBIA: El formato de mailOptions de SendGrid
+            // es compatible con el que ya tenías.
+            const mailOptions = { from: config.email.from, to, ...template };
+
+            await this.circuitBreaker.fire(mailOptions);
+            logger.info(`Email '${template.subject}' enviado exitosamente a: ${to}`);
+        } catch (error) {
+            // Manejamos los errores que SendGrid pueda lanzar
+            let errorMessage = error.message;
+            if (error.response) {
+                // Captura errores específicos de la API de SendGrid
+                errorMessage = error.response.body.errors[0]?.message || 'SendGrid API Error';
+            }
+            logger.error(`No se pudo enviar el email a ${to}. Causa: ${errorMessage}`);
+        }
+    }
+
+    // =================================================================
+    // MÉTODOS PÚBLICOS (NO CAMBIAN NADA)
+    // =================================================================
+
+    async sendVerificationEmail(to, code) {
+        const template = createVerificationEmail({ verificationCode: code });
+        await this._sendSecure(to, template);
+    }
+
+    async sendPasswordResetEmail(to, code) {
+        const template = createPasswordResetEmail({ verificationCode: code });
+        await this._sendSecure(to, template);
+    }
+
+    async sendNewTransactionNotification(to, transactionDetails) {
+        const template = createTransactionNotificationEmail(transactionDetails);
+        await this._sendSecure(to, template);
+    }
+}
+
+export default new EmailService();
