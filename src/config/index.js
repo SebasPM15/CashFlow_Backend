@@ -43,6 +43,7 @@ const env = cleanEnv(process.env, {
     }),
 
     // EMAIL SERVICE
+    SENDGRID_API_KEY: str({ desc: 'API Key for SendGrid' }),
     EMAIL_HOST: str({ devDefault: 'smtp.mailtrap.io' }),
     EMAIL_PORT: port({ devDefault: 2525 }),
     EMAIL_USER: str({ devDefault: 'testuser' }),
@@ -91,6 +92,7 @@ const config = {
         sensitiveFields: env.LOG_SENSITIVE_FIELDS, // <-- AÑADIR ESTA LÍNEA
     },
     email: {
+        apiKey: env.SENDGRID_API_KEY,
         host: env.EMAIL_HOST,
         port: env.EMAIL_PORT,
         auth: {
