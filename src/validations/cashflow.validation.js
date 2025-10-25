@@ -35,7 +35,7 @@ const getTransactions = Joi.object().keys({
     endDate: Joi.date().iso().optional(),
     categoryId: Joi.number().integer().positive().optional(),
     subcategoryId: Joi.number().integer().positive().optional(),
-    paymentMethod: Joi.string().trim().optional(),
+    methodId: Joi.number().integer().positive().optional(),
 }).allow(null, ''); // Permite un body vacío para obtener todos los resultados
 
 const upsertEvidence = Joi.object().keys({

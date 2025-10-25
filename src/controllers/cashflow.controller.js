@@ -146,15 +146,15 @@ const getEvidenceUrl = asyncHandler(async (req, res) => {
  * Maneja la petición para obtener el saldo inicial de un mes específico.
  */
 const getMonthlyBalance = asyncHandler(async (req, res) => {
-    const { year, month } = req.body.dinBody; // Extraemos del dinBody
-
-    const monthlyBalance = await cashflowService.getMonthlyBalance({ year, month });
+    const { year, month } = req.body.dinBody;
+    // La función del servicio ahora devuelve un objeto con initialBalance y averageBalance
+    const balanceData = await cashflowService.getMonthlyBalance({ year, month });
 
     sendResponse(
         res,
         httpStatus.OK,
-        'Saldo inicial obtenido exitosamente.',
-        monthlyBalance
+        'Datos del balance mensual obtenidos exitosamente.', // Mensaje más general
+        balanceData // Devolvemos el objeto completo
     );
 });
 

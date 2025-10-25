@@ -190,6 +190,7 @@ const createTransaction = async (transactionData, userId) => {
 
 /**
  * Obtiene una lista paginada de transacciones, incluyendo sus evidencias.
+ * (VERSIÓN CORREGIDA PARA FILTRO DE CATEGORÍA)
  */
 const getTransactionsList = async (user, queryParams) => {
     const {
@@ -198,32 +199,25 @@ const getTransactionsList = async (user, queryParams) => {
         userId: adminUserIdFilter,
         startDate,
         endDate,
-        categoryId,
+        categoryId, // <-- Lo usaremos en el include anidado
         subcategoryId,
         methodId,
     } = queryParams;
 
     const offset = (page - 1) * limit;
 
-    // --- CONSTRUCCIÓN DINÁMICA DE LA CONSULTA (CORREGIDA) ---
+    // --- CONSTRUCCIÓN DINÁMICA DE LA CONSULTA ---
     const whereClause = {};
 
-    // Filtro base por rol de usuario
     if (user.role.role_name === 'employee') {
         whereClause.user_id = user.user_id;
     } else if (user.role.role_name === 'admin' && adminUserIdFilter) {
         whereClause.user_id = adminUserIdFilter;
     }
 
-    // Añadir filtros directos si existen
-    if (methodId) whereClause.methodId = methodId;
+    // Filtros directos a la tabla 'cash_flow_transactions'
+    if (methodId) whereClause.method_id = methodId;
     if (subcategoryId) whereClause.subcategory_id = subcategoryId;
-
-    // CORRECCIÓN: Se mueve el filtro de categoryId a la cláusula principal
-    // usando la notación '$' para referenciar una columna de una tabla asociada.
-    if (categoryId) {
-        whereClause['$subcategory.category_id$'] = categoryId;
-    }
 
     // Filtro por rango de fechas
     if (startDate && endDate) {
@@ -234,23 +228,38 @@ const getTransactionsList = async (user, queryParams) => {
         whereClause.transaction_date = { [Op.lte]: new Date(endDate) };
     }
 
+    // --- CORRECCIÓN DE LÓGICA DE INCLUDE ---
+    // Construimos la inclusión de Subcategoría y Categoría
+    const subcategoryInclude = {
+        model: db.Subcategory,
+        as: 'subcategory',
+        attributes: ['subcategory_name'],
+        required: false, // Por defecto es LEFT JOIN
+        include: {
+            model: db.Category,
+            as: 'category',
+            attributes: ['category_name'],
+            required: false, // Por defecto es LEFT JOIN
+        },
+    };
+
+    // *** ESTA ES LA CORRECCIÓN ***
+    // Si se proporciona un categoryId, modificamos el "include" anidado
+    if (categoryId) {
+        // 1. Añadimos el 'where' DENTRO del include de Category
+        subcategoryInclude.include.where = { category_id: categoryId };
+        // 2. Forzamos un INNER JOIN en ambas tablas
+        subcategoryInclude.include.required = true;
+        subcategoryInclude.required = true;
+    }
+
     // Ejecutar la consulta final
     const { count, rows } = await db.CashFlowTransaction.findAndCountAll({
         where: whereClause,
         include: [
             { model: db.User, as: 'user', attributes: ['user_id', 'first_name', 'last_name'] },
             { model: db.Evidence, as: 'evidences', attributes: ['evidence_id', 'original_filename'] },
-            // La inclusión de Subcategory y Category se mantiene igual, pero sin el 'where' dinámico
-            {
-                model: db.Subcategory,
-                as: 'subcategory',
-                attributes: ['subcategory_name'],
-                include: {
-                    model: db.Category,
-                    as: 'category',
-                    attributes: ['category_name'],
-                },
-            },
+            subcategoryInclude, // <-- Usamos nuestro include dinámico
             {
                 model: db.PaymentMethod,
                 as: 'paymentMethod',
@@ -445,25 +454,70 @@ const getEvidenceDownloadUrl = async (evidenceId, user) => {
 };
 
 /**
- * Obtiene el registro del saldo inicial para un mes y año específicos.
+ * Obtiene el saldo inicial, final y calcula el saldo promedio para un mes y año específicos.
+ * El saldo promedio se calcula como la suma de los saldos resultantes de cada transacción
+ * del mes, dividido por el número de transacciones en ese mes.
  * @param {object} queryData - Datos para la búsqueda.
  * @param {number} queryData.year - El año.
  * @param {number} queryData.month - El mes.
- * @returns {Promise<db.MonthlyBalance | null>} El registro del saldo o null si no existe.
+ * @returns {Promise<object>} Objeto con initialBalance, finalBalance y averageBalance.
  */
 const getMonthlyBalance = async (queryData) => {
     const { year, month } = queryData;
 
-    const monthlyBalance = await db.MonthlyBalance.findOne({
+    // 1. Buscar el saldo inicial (sin cambios)
+    const monthlyBalanceRecord = await db.MonthlyBalance.findOne({
         where: { year, month },
     });
 
-    // Lanzamos un error si no se encuentra, para dar feedback claro.
-    if (!monthlyBalance) {
+    if (!monthlyBalanceRecord) {
         throw new ApiError(httpStatus.NOT_FOUND, `No se encontró un saldo inicial configurado para ${month}/${year}.`);
     }
+    const initialBalance = parseFloat(monthlyBalanceRecord.initial_balance);
 
-    return monthlyBalance;
+    // 2. Buscar TODAS las transacciones ACTIVAS de ese mes
+    const transactionsOfMonth = await db.CashFlowTransaction.findAll({
+        where: {
+            // Filtrar por año y mes
+            [Op.and]: [
+                db.sequelize.where(db.sequelize.fn('EXTRACT', db.sequelize.literal('YEAR FROM transaction_date')), year),
+                db.sequelize.where(db.sequelize.fn('EXTRACT', db.sequelize.literal('MONTH FROM transaction_date')), month),
+            ],
+            status: 'ACTIVE' // Considerar solo transacciones activas
+        },
+        order: [['created_at', 'ASC']], // Ordenar para encontrar el final fácilmente
+        attributes: ['resulting_balance', 'created_at'], // Solo necesitamos el saldo resultante
+    });
+
+    // 3. Determinar el saldo final y calcular la suma para el promedio
+    let finalBalance = initialBalance; // Por defecto, si no hay transacciones
+    let sumOfBalances = 0;
+    const numberOfTransactions = transactionsOfMonth.length;
+
+    if (numberOfTransactions > 0) {
+        // El saldo final es el de la última transacción registrada en ese mes
+        finalBalance = parseFloat(transactionsOfMonth[transactionsOfMonth.length - 1].resulting_balance);
+
+        // Sumar todos los saldos resultantes
+        transactionsOfMonth.forEach(tx => {
+            sumOfBalances += parseFloat(tx.resulting_balance);
+        });
+    }
+
+    // 4. Calcular el saldo promedio según la fórmula proporcionada
+    const averageBalance = numberOfTransactions > 0
+        ? (sumOfBalances / numberOfTransactions)
+        : initialBalance; // Si no hay transacciones, el promedio es el saldo inicial
+
+    // 5. Devolver los valores
+    return {
+        year,
+        month,
+        initialBalance: initialBalance.toFixed(2),
+        finalBalance: finalBalance.toFixed(2),
+        averageBalance: averageBalance.toFixed(2), // Promedio de los saldos de transacción
+        numberOfTransactions: numberOfTransactions // Dato extra útil
+    };
 };
 
 export default {
