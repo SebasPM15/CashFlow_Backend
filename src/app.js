@@ -104,5 +104,3 @@ const startServer = async () => {
 };
 
 startServer();
-
-export default app; // ¡ESTO ES LO MÁS IMPORTANTE!
