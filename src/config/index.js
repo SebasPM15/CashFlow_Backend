@@ -1,5 +1,3 @@
-// src/config/index.js
-
 import dotenv from 'dotenv';
 import { cleanEnv, str, port, num, url, bool } from 'envalid';
 
@@ -42,13 +40,21 @@ const env = cleanEnv(process.env, {
         desc: 'Campos a enmascarar en los logs, formato: field1.strategy,field2.strategy'
     }),
 
-    // EMAIL SERVICE
+    // EMAIL SERVICE (SendGrid)
     SENDGRID_API_KEY: str({ desc: 'API Key for SendGrid' }),
+    EMAIL_FROM: str({ default: '"MyApp" <no-reply@myapp.com>' }),
+    // Dejamos estas con 'devDefault' para que no sean obligatorias en producción
     EMAIL_HOST: str({ devDefault: 'smtp.mailtrap.io' }),
     EMAIL_PORT: port({ devDefault: 2525 }),
     EMAIL_USER: str({ devDefault: 'testuser' }),
     EMAIL_PASS: str({ devDefault: 'testpass' }),
-    EMAIL_FROM: str({ default: '"MyApp" <no-reply@myapp.com>' }),
+
+    // --- CORRECCIÓN AQUÍ ---
+    // Añadimos Supabase y Slack a la validación de 'envalid'
+    SUPABASE_URL: url({ desc: 'Supabase project URL' }),
+    SUPABASE_SERVICE_KEY: str({ desc: 'Supabase service role key' }),
+    SUPABASE_BUCKET_NAME: str({ default: 'evidence' }),
+    SLACK_WEBHOOK_URL: url({ desc: 'Slack incoming webhook URL' }),
 });
 
 // Organiza la configuración en un objeto anidado y estructurado
@@ -89,32 +95,36 @@ const config = {
     },
     logging: {
         level: env.isProduction ? 'info' : 'debug',
-        sensitiveFields: env.LOG_SENSITIVE_FIELDS, // <-- AÑADIR ESTA LÍNEA
+        sensitiveFields: env.LOG_SENSITIVE_FIELDS,
     },
     email: {
+        // Usamos la API key para SendGrid
         apiKey: env.SENDGRID_API_KEY,
+        from: env.EMAIL_FROM,
+        
+        // Mantenemos esto por si cambias a SMTP en desarrollo
         host: env.EMAIL_HOST,
         port: env.EMAIL_PORT,
         auth: {
             user: env.EMAIL_USER,
             pass: env.EMAIL_PASS,
         },
-        from: env.EMAIL_FROM,
     },
+    // --- CORRECCIÓN AQUÍ ---
+    // Leemos las variables limpias desde 'env' en lugar de 'process.env'
     supabase: {
-        url: process.env.SUPABASE_URL,
-        serviceKey: process.env.SUPABASE_SERVICE_KEY,
-        bucketName: 'evidence', // Definimos el nombre del bucket aquí
+        url: env.SUPABASE_URL,
+        serviceKey: env.SUPABASE_SERVICE_KEY,
+        bucketName: env.SUPABASE_BUCKET_NAME,
     },
     slack: {
-        webhookUrl: process.env.SLACK_WEBHOOK_URL,
+        webhookUrl: env.SLACK_WEBHOOK_URL,
     }
 };
 
-// Asegúrate de validarla
-if (!config.slack.webhookUrl) {
-    throw new Error('FATAL ERROR: SLACK_WEBHOOK_URL is not defined.');
-}
+// --- CORRECCIÓN AQUÍ ---
+// Eliminamos la validación manual, 'envalid' ya la hizo por nosotros.
+// if (!config.slack.webhookUrl) { ... }
 
 // Congela el objeto para hacerlo inmutable, previniendo modificaciones accidentales
 export default Object.freeze(config);
