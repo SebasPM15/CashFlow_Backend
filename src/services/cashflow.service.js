@@ -151,7 +151,14 @@ const createTransaction = async (transactionData, userId) => {
     // --- 6. Notificación por Email (sin cambios) ---
     try {
         const user = await db.User.findByPk(userId);
-        const admin = await db.User.findOne({ include: { model: db.Role, as: 'role', where: { role_name: 'admin' } } });
+        const admins = await db.User.findAll({
+            where: { is_active: true }, // Buena práctica
+            include: {
+                model: db.Role,
+                as: 'role',
+                where: { role_name: 'admin' },
+            },
+        });
 
         if (user) {
             // 1. Preparamos el objeto 'details' (DRY)
@@ -167,10 +174,17 @@ const createTransaction = async (transactionData, userId) => {
             };
 
             // 2. Notificación por Email (si el admin existe)
-            if (admin) {
-                emailService.sendNewTransactionNotification(admin.email, details);
+            if (admins && admins.length > 0) {
+                // Usamos un bucle para enviar el correo a cada admin
+                for (const admin of admins) {
+                    // Se envían en paralelo (no usamos await)
+                    emailService.sendNewTransactionNotification(admin.email, details)
+                        .catch(err => {
+                            logger.error(`Error al enviar email de notificación al admin ${admin.email}: ${err.message}`);
+                        });
+                }
             } else {
-                logger.warn('No se encontró un usuario admin para enviar la notificación por email.');
+                logger.warn('No se encontraron usuarios admin activos para enviar la notificación por email.');
             }
 
             // 3. NUEVO: Notificación por Slack (Fire-and-Forget)
