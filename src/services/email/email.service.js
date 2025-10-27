@@ -1,4 +1,5 @@
-import nodemailer from 'nodemailer';
+// 1. CAMBIO: Importamos 'sgMail' y quitamos 'nodemailer'
+import sgMail from '@sendgrid/mail';
 import opossum from 'opossum';
 import config from '../../config/index.js';
 import logger from '../../utils/logger.js';
@@ -8,11 +9,10 @@ import { createTransactionNotificationEmail } from './transactionNotification.te
 
 class EmailService {
     constructor() {
-        this.transporter = nodemailer.createTransport({
-            host: config.email.host,
-            port: config.email.port,
-            auth: config.email.auth,
-        });
+        // 2. CAMBIO: Quitamos 'nodemailer.createTransport' y
+        //    configuramos la API Key de SendGrid.
+        //    Tu config ahora debe pasar 'config.email.apiKey'
+        sgMail.setApiKey(config.email.apiKey);
 
         this._sendMail = this._sendMail.bind(this);
 
@@ -22,7 +22,6 @@ class EmailService {
             resetTimeout: 30000,
         };
 
-        // --- Se añade la palabra 'new' ---
         this.circuitBreaker = new opossum(this._sendMail, circuitBreakerOptions);
 
         this.circuitBreaker.on('open', () => logger.error('[EmailService] Circuit Breaker opened.'));
@@ -32,7 +31,9 @@ class EmailService {
 
     /** @private */
     async _sendMail(mailOptions) {
-        await this.transporter.sendMail(mailOptions);
+        // 3. CAMBIO: Reemplazamos 'transporter.sendMail'
+        //    por el método del SDK de SendGrid.
+        await sgMail.send(mailOptions);
     }
 
     /**
@@ -42,17 +43,26 @@ class EmailService {
     async _sendSecure(to, template) {
         try {
             logger.info(`Intentando enviar email de tipo '${template.subject}' a: ${to}`);
+            
+            // ESTO NO CAMBIA: El formato de mailOptions de SendGrid
+            // es compatible con el que ya tenías.
             const mailOptions = { from: config.email.from, to, ...template };
 
             await this.circuitBreaker.fire(mailOptions);
             logger.info(`Email '${template.subject}' enviado exitosamente a: ${to}`);
         } catch (error) {
-            logger.error(`No se pudo enviar el email a ${to}. Causa: ${error.message}`);
+            // Manejamos los errores que SendGrid pueda lanzar
+            let errorMessage = error.message;
+            if (error.response) {
+                // Captura errores específicos de la API de SendGrid
+                errorMessage = error.response.body.errors[0]?.message || 'SendGrid API Error';
+            }
+            logger.error(`No se pudo enviar el email a ${to}. Causa: ${errorMessage}`);
         }
     }
 
     // =================================================================
-    // Métodos Públicos (API del Servicio)
+    // MÉTODOS PÚBLICOS (NO CAMBIAN NADA)
     // =================================================================
 
     async sendVerificationEmail(to, code) {
