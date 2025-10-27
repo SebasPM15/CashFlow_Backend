@@ -6,7 +6,8 @@ import cookieParser from 'cookie-parser';
 import config from './config/index.js';
 import logger from './utils/logger.js';
 import db from './models/index.js';
-import { authenticateWithRetry } from './config/db.js';
+// Se comenta la autenticación inicial; no se usa en serverless
+// import { authenticateWithRetry } from './config/db.js'; 
 import apiRouter from './routes/index.js';
 import { errorHandler } from './middlewares/error.middleware.js';
 
@@ -29,10 +30,12 @@ const app = express();
 const startServer = async () => {
     try {
         logger.info('================================================================');
-        logger.info('⏳ INICIANDO SERVIDOR...');
+        logger.info('⏳ INICIANDO APP SERVERLESS (Vercel)...');
 
-        // 1. Conectar a la base de datos con reintentos
-        await authenticateWithRetry();
+        // 1. Conexión a la BD (ELIMINADA)
+        // En un entorno serverless, la conexión se establece en la primera query,
+        // no al "iniciar" el servidor.
+        // await authenticateWithRetry();
 
         // --- Sincronización de Modelos (Solo en Desarrollo) ---
         if (config.app.env !== 'production' && process.env.DB_SYNC === 'true') {
@@ -60,47 +63,37 @@ const startServer = async () => {
 
         app.use(errorHandler);
 
+        logger.info('✅ Configuración de Middlewares completada.');
+        logger.info('================================================================');
+
+
+        // --- BLOQUE ELIMINADO ---
+        // Vercel maneja el ciclo de vida del servidor.
+        // No se usan app.listen() ni gracefulShutdown.
+        /*
         const server = app.listen(config.server.port, () => {
             logger.info('✅ ARRANQUE COMPLETADO');
             logger.info(`🚀 Servidor corriendo en modo ${config.app.env} en http://${config.server.host}:${config.server.port}`);
             logger.info('================================================================');
         });
 
-        // 8. Manejo de cierre grácil (Graceful Shutdown)
         const gracefulShutdown = (signal) => {
-            logger.info(`\n🚨 Recibida señal ${signal}. Iniciando cierre controlado...`);
-
-            // 1. Dejar de aceptar nuevas conexiones
-            server.close(async () => {
-                logger.info('✅ Servidor HTTP cerrado.');
-
-                // 2. Cerrar el pool de conexiones de la base de datos (LA PIEZA CLAVE)
-                try {
-                    await db.sequelize.close();
-                    logger.info('✅ Conexiones de la base de datos cerradas.');
-                } catch (error) {
-                    logger.error('❌ Error al cerrar las conexiones de la base de datos:', error);
-                }
-
-                // 3. Salir del proceso
-                logger.info('👋 Adiós!');
-                process.exit(0);
-            });
-
-            // Forzar el cierre después de un tiempo si las conexiones no se cierran a tiempo
-            setTimeout(() => {
-                logger.error('❌ Cierre forzado por timeout. Algunas conexiones pueden no haberse cerrado correctamente.');
-                process.exit(1);
-            }, 10000); // 10 segundos de tiempo de gracia
+            // ... (código eliminado)
         };
 
         process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
         process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+        */
+        // --- FIN BLOQUE ELIMINADO ---
 
     } catch (error) {
-        logger.error('🔥 Fallo al iniciar el servidor:', { error: error.message, stack: error.stack });
+        logger.error('🔥 Fallo al configurar la app:', { error: error.message, stack: error.stack });
         process.exit(1);
     }
 };
 
 startServer();
+
+// --- ¡EL CAMBIO MÁS IMPORTANTE PARA VERCEL! ---
+// Exportamos la instancia de 'app' para que Vercel la pueda consumir.
+export default app;
