@@ -6,6 +6,7 @@ import logger from '../../utils/logger.js';
 import { createVerificationEmail } from './verification.template.js';
 import { createPasswordResetEmail } from './passwordReset.template.js';
 import { createTransactionNotificationEmail } from './transactionNotification.template.js';
+import { createInvitationEmail } from './invitation.template.js';
 
 class EmailService {
     constructor() {
@@ -77,6 +78,17 @@ class EmailService {
 
     async sendNewTransactionNotification(to, transactionDetails) {
         const template = createTransactionNotificationEmail(transactionDetails);
+        await this._sendSecure(to, template);
+    }
+
+    /**
+     * Envía un correo de invitación a un nuevo empleado.
+     */
+    async sendInvitationEmail(to, data) {
+        // 1. Generamos el template (que devuelve { subject, html })
+        const template = createInvitationEmail(data);
+        
+        // 2. Usamos el helper _sendSecure para mantener la consistencia y el manejo de errores centralizado
         await this._sendSecure(to, template);
     }
 }

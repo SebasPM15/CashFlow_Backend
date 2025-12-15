@@ -1,10 +1,12 @@
 import { Router } from 'express';
 import { authController } from '../controllers/auth.controller.js';
-import { secureEndpoint, checkStatefulSession } from '../middlewares/auth.middleware.js'; // <-- NOMBRE ACTUALIZADO
+import { secureEndpoint, checkStatefulSession, authorizeRole } from '../middlewares/auth.middleware.js';
 import tramaValidator from '../middlewares/trama.middleware.js';
+import { validate } from '../middlewares/validate.middleware.js'; // Asegúrate de importar esto correctamente
 import {
-    validate,
-    registerSchema,
+    registerCompanySchema,
+    registerEmployeeSchema,
+    inviteEmployeeSchema,
     loginSchema,
     verifyAccountSchema,
     emailSchema,
@@ -17,11 +19,28 @@ const router = Router();
 // Rutas Públicas (No requieren token, pero sí la trama correcta)
 // =================================================================
 
+// 1. Registro de Compañía + Admin (El punto de entrada)
 router.post(
-    '/register',
+    '/register-company',
     tramaValidator,
-    validate(registerSchema),
-    authController.register
+    validate(registerCompanySchema),
+    authController.registerCompany
+);
+
+// 2. Registro de Empleado (Consumo de token de invitación)
+router.post(
+    '/register-employee',
+    tramaValidator,
+    validate(registerEmployeeSchema),
+    authController.registerEmployee
+);
+
+// 3. Validación de Token de Invitación (Para UI antes de registrar)
+router.post(
+    '/validate-invitation',
+    tramaValidator,
+    // Podrías crear un schema simple { token: Joi.string() } si quieres ser estricto
+    authController.validateInvitation
 );
 
 router.post(
@@ -68,10 +87,21 @@ router.post(
 // Rutas Protegidas (Requieren trama, token y sesión stateful)
 // =================================================================
 
+// 4. Invitar Usuario (Solo Admin puede invitar)
+router.post(
+    '/invite-user',
+    tramaValidator,
+    secureEndpoint,
+    checkStatefulSession,
+    authorizeRole('admin'), // Restricción de rol
+    validate(inviteEmployeeSchema),
+    authController.inviteUser
+);
+
 router.post(
     '/logout',
     tramaValidator,
-    secureEndpoint,         // <-- NOMBRE ACTUALIZADO
+    secureEndpoint,
     checkStatefulSession,
     authController.logout
 );

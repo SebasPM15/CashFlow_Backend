@@ -1,4 +1,5 @@
 import authService from '../services/auth.service.js';
+import invitationService from '../services/invitation.service.js'; // Importamos el servicio de invitaciones
 import asyncHandler from '../utils/asyncHandler.js';
 import { sendResponse } from '../utils/response.util.js';
 import { ApiError } from '../utils/ApiError.js';
@@ -8,11 +9,45 @@ import config from '../config/index.js';
 // Controladores Públicos
 // =================================================================
 
-const register = asyncHandler(async (req, res) => {
+const registerCompany = asyncHandler(async (req, res) => {
     const { dinBody } = req.body;
-    const result = await authService.register(dinBody);
+    const result = await authService.registerAdmin(dinBody);
 
-    sendResponse(res, 201, 'Usuario registrado exitosamente', result.user);
+    sendResponse(res, 201, 'Compañía y Administrador registrados exitosamente.', result);
+});
+
+/**
+ * Registro de empleado: Finaliza el registro usando un token de invitación.
+ */
+const registerEmployee = asyncHandler(async (req, res) => {
+    const { dinBody } = req.body;
+    // Llama al método que consume el token de invitación
+    const result = await invitationService.acceptInvitation(dinBody);
+
+    sendResponse(res, 201, 'Empleado registrado exitosamente.', result);
+});
+
+/**
+ * Genera y envía una invitación a un nuevo empleado (Solo Admins).
+ */
+const inviteUser = asyncHandler(async (req, res) => {
+    const { dinBody } = req.body;
+    const adminUser = req.user; // El middleware auth inyecta el usuario completo
+    
+    // Pasamos companyId explícitamente desde el usuario autenticado
+    const result = await invitationService.createInvitation(dinBody, adminUser.user_id, adminUser.company.company_id);
+
+    sendResponse(res, 201, 'Invitación enviada exitosamente.', result);
+});
+
+/**
+ * Valida un token de invitación para mostrar info en el frontend antes de registrar.
+ */
+const validateInvitation = asyncHandler(async (req, res) => {
+    const { token } = req.body.dinBody;
+    const info = await invitationService.validateInvitationToken(token);
+    
+    sendResponse(res, 200, 'Invitación válida.', info);
 });
 
 const login = asyncHandler(async (req, res) => {
@@ -99,7 +134,10 @@ const refreshSession = asyncHandler(async (req, res) => {
 
 
 export const authController = {
-    register,
+    registerCompany, // NUEVO
+    registerEmployee, // NUEVO
+    inviteUser, // NUEVO
+    validateInvitation, // NUEVO
     login,
     verifyAccount,
     resendVerificationCode,

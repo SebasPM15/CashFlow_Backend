@@ -1,3 +1,5 @@
+// src/services/auth.service.js
+
 import bcrypt from 'bcryptjs';
 import crypto from 'crypto';
 import jwt from 'jsonwebtoken';
@@ -16,14 +18,22 @@ class AuthService {
     // =================================================================
 
     /**
-     * Busca un usuario por su email.
+     * Busca un usuario por su email, incluyendo su compañía.
      * @private
      */
     async _findUserByEmail(email, { withPassword = false, transaction = null } = {}) {
         const scope = withPassword ? 'withPassword' : 'defaultScope';
         return db.User.scope(scope).findOne({
             where: { email },
-            include: { model: db.Role, as: 'role', attributes: ['role_name'] },
+            include: [
+                { model: db.Role, as: 'role', attributes: ['role_name'] },
+                { 
+                    model: db.Company, 
+                    as: 'company', 
+                    // AGREGA 'is_active' AQUÍ ABAJO 👇
+                    attributes: ['company_id', 'company_name', 'company_ruc', 'is_active'] 
+                }
+            ],
             transaction,
         });
     }
@@ -44,6 +54,12 @@ class AuthService {
         if (!user.is_active) {
             throw new ApiError(403, 'Tu cuenta está desactivada. Contacta al administrador.');
         }
+        
+        // Verificar que la compañía esté activa
+        if (!user.company.is_active) {
+            throw new ApiError(403, 'La compañía asociada a tu cuenta está desactivada. Contacta a soporte.');
+        }
+        
         return user;
     }
 
@@ -58,7 +74,6 @@ class AuthService {
 
         await db.Session.destroy({ where: { user_id: user.user_id } });
 
-        // Sequelize generará el UUID por defecto gracias a la definición del modelo.
         const newSession = await db.Session.create({
             user_id: user.user_id,
             refresh_token_hash: refreshTokenHash,
@@ -79,7 +94,7 @@ class AuthService {
      */
     async _generateAndSetVerificationCode(user) {
         const verificationCode = generateVerificationCode();
-        const expiresAt = new Date(Date.now() + 15 * 60 * 1000); // 15 min de expiración
+        const expiresAt = new Date(Date.now() + 15 * 60 * 1000);
 
         user.verification_code = verificationCode;
         user.verification_code_expires_at = expiresAt;
@@ -93,48 +108,98 @@ class AuthService {
     // =================================================================
 
     /**
-     * Orquesta el registro de un nuevo usuario.
+     * Orquesta el registro de un nuevo ADMIN que crea su compañía.
      */
-    async register(userData) {
-        const { firstName, lastName, email, password, phoneNumber } = userData;
-        if (!firstName || !lastName || !email || !password) {
-            throw new ApiError(400, 'Nombre, apellido, email y contraseña son requeridos.');
+    async registerAdmin(userData) {
+        const { 
+            companyRuc, 
+            companyName, 
+            firstName, 
+            lastName, 
+            email, 
+            password, 
+            phoneNumber 
+        } = userData;
+
+        // Validaciones iniciales
+        if (!companyRuc || !companyName || !firstName || !lastName || !email || !password) {
+            throw new ApiError(400, 'Todos los campos son requeridos para el registro del administrador.');
         }
 
         const t = await db.sequelize.transaction();
         try {
+            // 1. Verificar que el email no esté registrado
             const existingUser = await this._findUserByEmail(email, { transaction: t });
             if (existingUser) {
                 throw new ApiError(409, 'El correo electrónico ya está registrado.');
             }
 
-            const passwordHash = await bcrypt.hash(password, 10);
-            const employeeRole = await db.Role.findOne({ where: { role_name: 'employee' }, transaction: t });
-            if (!employeeRole) throw new ApiError(500, 'Configuración de rol base no encontrada.');
+            // 2. Verificar que el RUC no esté registrado
+            const existingCompany = await db.Company.findOne({ 
+                where: { company_ruc: companyRuc }, 
+                transaction: t 
+            });
+            if (existingCompany) {
+                throw new ApiError(409, 'El RUC ya está registrado en el sistema.');
+            }
 
+            // 3. Crear la compañía
+            const newCompany = await db.Company.create({
+                company_ruc: companyRuc,
+                company_name: companyName,
+                is_active: true,
+            }, { transaction: t });
+
+            logger.info(`Compañía creada: ${newCompany.company_name} (RUC: ${newCompany.company_ruc})`);
+
+            // 4. Obtener el rol de admin
+            const adminRole = await db.Role.findOne({ 
+                where: { role_name: 'admin' }, 
+                transaction: t 
+            });
+            if (!adminRole) {
+                throw new ApiError(500, 'Configuración de rol base no encontrada.');
+            }
+
+            // 5. Crear el usuario admin
+            const passwordHash = await bcrypt.hash(password, 10);
             const verificationCode = generateVerificationCode();
             const expiresAt = new Date(Date.now() + 15 * 60 * 1000);
 
-            // --- CORRECCIÓN: Ser explícitos con los campos soluciona el bug del phone_number ---
             const newUser = await db.User.create({
+                company_id: newCompany.company_id,
+                role_id: adminRole.role_id,
                 first_name: firstName,
                 last_name: lastName,
                 email: email,
-                phone_number: phoneNumber, // Mapeo explícito
+                phone_number: phoneNumber,
                 password_hash: passwordHash,
-                role_id: employeeRole.role_id,
                 verification_code: verificationCode,
                 verification_code_expires_at: expiresAt,
             }, { transaction: t });
 
             await t.commit();
+
+            // 6. Enviar email de verificación
             await emailService.sendVerificationEmail(newUser.email, verificationCode);
-            logger.info('Usuario registrado. Email de verificación enviado.', {
+
+            logger.info('Administrador registrado exitosamente.', {
                 userId: newUser.user_id,
-                email: newUser.email
+                email: newUser.email,
+                companyId: newCompany.company_id
             });
 
-            return { user: { user_id: newUser.user_id, email: newUser.email } };
+            return {
+                user: {
+                    user_id: newUser.user_id,
+                    email: newUser.email
+                },
+                company: {
+                    company_id: newCompany.company_id,
+                    company_name: newCompany.company_name,
+                    company_ruc: newCompany.company_ruc
+                }
+            };
         } catch (error) {
             await t.rollback();
             throw error instanceof ApiError ? error : new ApiError(500, 'No se pudo completar el registro.');
@@ -148,7 +213,6 @@ class AuthService {
         if (!email || !password) throw new ApiError(400, 'Email y contraseña son requeridos.');
 
         const user = await this._validateUserCredentials(email, password);
-        // --- Capturamos el uuid devuelto por el helper ---
         const { accessToken, refreshToken, sessionId, uuid } = await this._createAndPersistSession(user);
 
         logger.info(`Inicio de sesión exitoso para ${email}`);
@@ -156,7 +220,6 @@ class AuthService {
         const userDto = user.toJSON();
         delete userDto.password_hash;
 
-        // --- Devolvemos todos los identificadores ---
         return { user: userDto, accessToken, refreshToken, sessionId, uuid };
     }
 
@@ -171,13 +234,19 @@ class AuthService {
         if (user.is_verified) throw new ApiError(409, 'La cuenta ya ha sido verificada.');
         if (user.verification_code_expires_at < new Date()) throw new ApiError(410, 'El código ha expirado.');
 
-        await user.update({ is_verified: true, verification_code: null, verification_code_expires_at: null });
+        await user.update({ 
+            is_verified: true, 
+            is_active: true,  // Activar la cuenta al verificar
+            verification_code: null, 
+            verification_code_expires_at: null 
+        });
+
         logger.info(`Cuenta verificada para: ${email}`);
         return { message: 'Cuenta verificada exitosamente. Ahora puedes iniciar sesión.' };
     }
 
     /**
-     * **NUEVO:** Reenvía un nuevo código de verificación a un usuario no verificado.
+     * Reenvía un nuevo código de verificación a un usuario no verificado.
      */
     async resendVerificationCode(email) {
         if (!email) throw new ApiError(400, 'Email es requerido.');
@@ -194,18 +263,16 @@ class AuthService {
     }
 
     /**
-     * **NUEVO:** Inicia el proceso de reseteo de contraseña.
+     * Inicia el proceso de reseteo de contraseña.
      */
     async requestPasswordReset(email) {
         if (!email) throw new ApiError(400, 'Email es requerido.');
 
         const user = await this._findUserByEmail(email);
-        // Por seguridad, no revelamos si el usuario existe o no.
-        // Solo si existe Y está verificado, generamos y enviamos el código.
         if (user && user.is_verified) {
             const resetCode = await this._generateAndSetVerificationCode(user);
             await emailService.sendPasswordResetEmail(user.email, resetCode);
-            logger.info(`Solicitud de reseteo de contraseña para ${email}. Código: ${resetCode}`);
+            logger.info(`Solicitud de reseteo de contraseña para ${email}.`);
         } else {
             logger.warn(`Solicitud de reseteo para email no registrado o no verificado: ${email}`);
         }
@@ -214,7 +281,7 @@ class AuthService {
     }
 
     /**
-     * **NUEVO:** Completa el reseteo de contraseña y revoca todas las sesiones.
+     * Completa el reseteo de contraseña y revoca todas las sesiones.
      */
     async resetPassword(email, verificationCode, newPassword) {
         if (!email || !verificationCode || !newPassword) {
@@ -236,7 +303,6 @@ class AuthService {
             verification_code_expires_at: null
         });
 
-        // Medida de seguridad CRÍTICA: invalidar todas las sesiones activas.
         await db.Session.destroy({ where: { user_id: user.user_id } });
 
         logger.info(`Contraseña restablecida y sesiones revocadas para: ${email}`);
@@ -263,7 +329,10 @@ class AuthService {
 
         let payload;
         try {
-            payload = jwt.verify(providedRefreshToken, config.jwt.secret, { issuer: config.jwt.issuer, audience: config.jwt.audience });
+            payload = jwt.verify(providedRefreshToken, config.jwt.secret, { 
+                issuer: config.jwt.issuer, 
+                audience: config.jwt.audience 
+            });
             if (payload.typ !== 'refresh') throw new Error('Tipo de token incorrecto.');
         } catch (error) {
             throw new ApiError(401, 'Refresh token inválido o expirado.');
