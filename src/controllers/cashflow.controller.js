@@ -158,6 +158,19 @@ const getMonthlyBalance = asyncHandler(async (req, res) => {
     );
 });
 
+const updateSubcategory = asyncHandler(async (req, res) => {
+    const { transactionId, newSubcategoryId } = req.body.dinBody;
+    // No pasamos 'user' porque la ruta ya está protegida por authorizeRole('admin')
+    const updatedTransaction = await cashflowService.updateTransactionSubcategory(transactionId, newSubcategoryId);
+
+    sendResponse(
+        res,
+        httpStatus.OK,
+        'Transacción re-categorizada y saldos recalculados exitosamente.',
+        updatedTransaction
+    );
+});
+
 export const cashflowController = {
     getPaymentMethods,
     setMonthlyBalance,
@@ -167,5 +180,6 @@ export const cashflowController = {
     cancelTransaction,
     updateConcept,
     getEvidenceUrl,
-    getMonthlyBalance
+    getMonthlyBalance,
+    updateSubcategory
 };

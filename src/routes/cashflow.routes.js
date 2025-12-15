@@ -104,4 +104,15 @@ router.post(
     cashflowController.getMonthlyBalance
 );
 
+// Endpoint para re-categorizar una transacción (SOLO ADMIN)
+router.post(
+    '/transactions/recategorize',
+    tramaValidator,
+    secureEndpoint,
+    checkStatefulSession,
+    authorizeRole('admin'), // Protección estricta para una operación contable
+    validate(cashflowValidation.updateCategory),
+    cashflowController.updateSubcategory
+);
+
 export default router;

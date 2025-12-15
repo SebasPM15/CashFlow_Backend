@@ -534,6 +534,146 @@ const getMonthlyBalance = async (queryData) => {
     };
 };
 
+/**
+ * Actualiza la subcategoría de una transacción existente.
+ * RESTRICCIÓN CRÍTICA: Solo permite cambiar a una subcategoría del mismo tipo (DEBIT/CREDIT)
+ * para mantener la consistencia contable.
+ * IMPORTANTE: Recalcula TODOS los saldos posteriores en la cadena.
+ */
+const updateTransactionSubcategory = async (transactionId, newSubcategoryId) => {
+    return await db.sequelize.transaction(async (t) => {
+        // --- 1. Buscar la transacción original ---
+        const transaction = await db.CashFlowTransaction.findOne({
+            where: { 
+                transaction_id: transactionId,
+                status: 'ACTIVE'
+            },
+            include: [{
+                model: db.Subcategory,
+                as: 'subcategory',
+                attributes: ['subcategory_id', 'subcategory_name', 'transaction_type']
+            }],
+            transaction: t
+        });
+
+        if (!transaction) {
+            throw new ApiError(httpStatus.NOT_FOUND, 'La transacción especificada no existe o ha sido cancelada.');
+        }
+
+        // --- 2. Verificar que no sea la misma subcategoría ---
+        if (transaction.subcategory_id === newSubcategoryId) {
+            throw new ApiError(httpStatus.BAD_REQUEST, 'La transacción ya tiene asignada esa subcategoría.');
+        }
+
+        // --- 3. Buscar y validar la nueva subcategoría ---
+        const newSubcategory = await db.Subcategory.findByPk(newSubcategoryId, {
+            include: [{
+                model: db.Category,
+                as: 'category',
+                attributes: ['category_name']
+            }],
+            transaction: t
+        });
+
+        if (!newSubcategory) {
+            throw new ApiError(httpStatus.NOT_FOUND, 'La nueva subcategoría especificada no existe.');
+        }
+
+        // --- 4. VALIDACIÓN CRÍTICA: Mismo tipo de transacción ---
+        const originalType = transaction.subcategory.transaction_type;
+        const newType = newSubcategory.transaction_type;
+
+        if (originalType !== newType) {
+            throw new ApiError(
+                httpStatus.BAD_REQUEST,
+                `No se puede cambiar a una subcategoría de tipo diferente. ` +
+                `La transacción original es de tipo ${originalType} y la nueva subcategoría es de tipo ${newType}. ` +
+                `Por favor, selecciona una subcategoría del mismo tipo para mantener la consistencia contable.`
+            );
+        }
+
+        // --- 5. Actualizar la subcategoría ---
+        const oldSubcategoryName = transaction.subcategory.subcategory_name;
+        transaction.subcategory_id = newSubcategoryId;
+        
+        // Actualizar el concepto con información de auditoría
+        transaction.concept = `${transaction.concept} [Subcategoría actualizada de "${oldSubcategoryName}" a "${newSubcategory.subcategory_name}"]`;
+        
+        await transaction.save({ transaction: t });
+
+        // --- 6. RECALCULAR SALDOS POSTERIORES (CORREGIDO) ---
+
+        // 6a. Encontrar el saldo de la transacción ANTERIOR a la que estamos editando.
+        const lastTxBeforeUpdated = await db.CashFlowTransaction.findOne({
+            where: {
+                status: 'ACTIVE',
+                created_at: { [Op.lt]: transaction.created_at } // La última activa creada ANTES
+            },
+            order: [['created_at', 'DESC']],
+            limit: 1,
+            transaction: t
+        });
+
+        // 6b. Determinar el punto de partida del recálculo.
+        let currentBalance;
+        if (lastTxBeforeUpdated) {
+            currentBalance = parseFloat(lastTxBeforeUpdated.resulting_balance);
+        } else {
+            // Esta era la primera transacción. El punto de partida es el Saldo Inicial.
+            const date = new Date(transaction.transaction_date);
+            const monthlyBalance = await db.MonthlyBalance.findOne({
+                where: { year: date.getFullYear(), month: date.getMonth() + 1 },
+                transaction: t
+            });
+            // Salvaguarda (aunque no debería pasar si la tx original se creó bien)
+            if (!monthlyBalance) throw new ApiError(httpStatus.INTERNAL_SERVER_ERROR, 'No se encuentra el saldo inicial para recalcular.');
+            currentBalance = parseFloat(monthlyBalance.initial_balance);
+        }
+
+        // 6c. Encontrar TODAS las transacciones posteriores, *INCLUYENDO* la que acabamos de editar.
+        const subsequentTransactions = await db.CashFlowTransaction.findAll({
+            where: {
+                status: 'ACTIVE',
+                created_at: { [Op.gte]: transaction.created_at } // Mayor o IGUAL
+            },
+            order: [['created_at', 'ASC']],
+            transaction: t
+        });
+
+        // 6d. Recalcular la cadena
+        for (const tx of subsequentTransactions) {
+            const debit = parseFloat(tx.debit);
+            const credit = parseFloat(tx.credit);
+            const newBalance = currentBalance + credit - debit;
+
+            tx.resulting_balance = newBalance;
+            await tx.save({ transaction: t });
+
+            currentBalance = newBalance;
+        }
+
+        logger.info(`Recalculados ${subsequentTransactions.length} saldos (iniciando desde la transacción #${transactionId})`);
+
+        // --- 7. Retornar la transacción actualizada con su nueva subcategoría ---
+        // (Tu paso 7 era excelente, lo mantenemos)
+        return await db.CashFlowTransaction.findByPk(transactionId, {
+            include: [
+                {
+                    model: db.Subcategory,
+                    as: 'subcategory',
+                    attributes: ['subcategory_name'],
+                    include: {
+                        model: db.Category,
+                        as: 'category',
+                        attributes: ['category_name']
+                    }
+                }
+            ],
+            transaction: t
+        });
+    });
+};
+
 export default {
     getPaymentMethodsList,
     setInitialMonthlyBalance,
@@ -543,5 +683,6 @@ export default {
     cancelTransaction,
     updateTransactionConcept,
     getEvidenceDownloadUrl,
-    getMonthlyBalance
+    getMonthlyBalance,
+    updateTransactionSubcategory
 };
