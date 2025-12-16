@@ -74,9 +74,29 @@ const getBalanceValidationReport = asyncHandler(async (req, res) => {
     );
 });
 
+/**
+ * Maneja la petición para el Análisis Financiero Anual (Flujo de Fondos).
+ */
+const getFinancialAnalysis = asyncHandler(async (req, res) => {
+    // Validamos el body con el schema
+    const { dinBody } = req.body;
+    const { year } = dinBody; // El schema asegura que 'year' existe y es número
+    const companyId = req.user.company.company_id; // Contexto de seguridad
+
+    const analysis = await reportsService.getFinancialAnalysis(companyId, year);
+
+    sendResponse(
+        res,
+        httpStatus.OK,
+        'Análisis financiero anual generado exitosamente.',
+        analysis
+    );
+});
+
 export const reportsController = {
     getPeriodicReport,
     getReportByCategory,
     getSalesExpenseReport,
     getBalanceValidationReport,
+    getFinancialAnalysis
 };

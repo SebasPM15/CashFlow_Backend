@@ -132,6 +132,17 @@ const refreshSession = asyncHandler(async (req, res) => {
     sendResponse(res, 200, 'Token refrescado exitosamente', result);
 });
 
+/**
+ * Lista las invitaciones enviadas por la compañía.
+ */
+const listInvitations = asyncHandler(async (req, res) => {
+    const { dinBody } = req.body;
+    const companyId = req.user.company.company_id; // Seguridad: Filtro por compañía del token
+
+    const result = await invitationService.listInvitations(companyId, dinBody);
+
+    sendResponse(res, 200, 'Listado de invitaciones obtenido exitosamente.', result);
+});
 
 export const authController = {
     registerCompany, // NUEVO
@@ -145,4 +156,5 @@ export const authController = {
     resetPassword,
     logout,
     refreshSession,
+    listInvitations
 };

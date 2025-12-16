@@ -32,9 +32,12 @@ const getPeriodicReport = Joi.object().keys({
     methodId: Joi.number().integer().positive().optional(),
 });
 
-// (Aquí añadiremos futuras validaciones para reportes específicos
-// como 'balanceValidation' o 'salesExpenseReport' cuando los desarrollemos)
+export const financialAnalysisSchema = Joi.object({
+    year: Joi.number().integer().min(2000).max(2100).required()
+        .messages({ 'any.required': 'El año es requerido para el análisis financiero.' })
+});
 
 export const reportsValidation = {
     getPeriodicReport,
+    financialAnalysisSchema
 };

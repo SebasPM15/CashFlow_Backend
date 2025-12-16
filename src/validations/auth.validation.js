@@ -107,3 +107,12 @@ export const resetPasswordSchema = Joi.object({
     verificationCode: Joi.string().length(6).required(),
     newPassword: Joi.string().min(8).required(),
 });
+
+/**
+ * Esquema para listar invitaciones (filtro opcional por estado).
+ */
+export const listInvitationsSchema = Joi.object({
+    page: Joi.number().integer().min(1).default(1),
+    limit: Joi.number().integer().min(1).max(100).default(20),
+    isUsed: Joi.boolean().optional() // true = solo aceptadas, false = solo pendientes, null = todas
+});

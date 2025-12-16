@@ -11,6 +11,7 @@ import {
     verifyAccountSchema,
     emailSchema,
     resetPasswordSchema,
+    listInvitationsSchema
 } from '../validations/auth.validation.js';
 
 const router = Router();
@@ -96,6 +97,17 @@ router.post(
     authorizeRole('admin'), // Restricción de rol
     validate(inviteEmployeeSchema),
     authController.inviteUser
+);
+
+// Endpoint para ver el historial de invitaciones
+router.post(
+    '/invitations/list',
+    tramaValidator,
+    secureEndpoint,
+    checkStatefulSession,
+    authorizeRole('admin'), // Solo el admin puede ver esto
+    validate(listInvitationsSchema),
+    authController.listInvitations
 );
 
 router.post(
