@@ -98,7 +98,7 @@ class InvitationService {
 
             // 8. Enviar email de invitación (Manejo de errores aislado)
             try {
-                const invitationLink = `${config.app.frontendUrl}/accept-invitation?token=${invitationToken}`;
+                const invitationLink = `${config.server.frontendUrl}/register-employee?token=${invitationToken}`;
                 await emailService.sendInvitationEmail(email, {
                     companyName: company.company_name,
                     invitationCode: invitationCode,
@@ -311,7 +311,7 @@ class InvitationService {
             throw new ApiError(410, 'Esta invitación ha expirado. Crea una nueva invitación.');
         }
 
-        const invitationLink = `${config.app.frontendUrl}/accept-invitation?token=${invitation.invitation_token}`;
+        const invitationLink = `${config.server.frontendUrl}/register-employee?token=${invitation.invitation_token}`;
         await emailService.sendInvitationEmail(invitation.invited_email, {
             companyName: invitation.company.company_name,
             invitationCode: invitation.invitation_code,
