@@ -579,52 +579,94 @@ const getEvidenceDownloadUrl = async (evidenceId, user) => {
     return { downloadUrl: signedUrl };
 };
 
+
 /**
- * Obtiene el saldo del mes usando la lógica de resolución (sin error si no existe explícito).
+ * Obtiene el saldo del mes calculado en tiempo real.
+ * CORREGIDO: Considera el historial previo para calcular el saldo inicial exacto.
  */
 const getMonthlyBalance = async (queryData, companyId) => {
     const { year, month } = queryData;
 
-    // Usamos el helper para resolver el saldo inicial correcto
-    // Esto maneja automáticamente la herencia o el error si no hay nada configurado
-    const resolvedBalance = await _resolveInitialBalance(companyId, year, month);
-    const initialBalance = resolvedBalance.value;
+    // 1. Obtener el punto de partida (Ancla)
+    // Esto nos devuelve el saldo configurado (ej: Enero) o heredado del año pasado
+    const resolved = await _resolveInitialBalance(companyId, year, month);
+    let calculatedInitialBalance = resolved.value;
 
+    // 2. Calcular el "GAP" o brecha histórica
+    // Si el saldo ancla es de una fecha anterior al mes que pedimos, 
+    // debemos sumar todas las transacciones intermedias.
+    const targetMonthStart = new Date(year, month - 1, 1); // 1ro del mes solicitado
+    const anchorDate = resolved.date; // Fecha del saldo ancla
+
+    if (anchorDate < targetMonthStart) {
+        const intermediateTransactions = await db.CashFlowTransaction.findAll({
+            where: {
+                company_id: companyId,
+                status: 'ACTIVE',
+                transaction_date: {
+                    [Op.gte]: anchorDate,      // Desde el ancla
+                    [Op.lt]: targetMonthStart  // Hasta antes de empezar este mes
+                }
+            },
+            attributes: ['debit', 'credit']
+        });
+
+        // Sumamos el flujo histórico intermedio
+        const historicalFlow = intermediateTransactions.reduce((acc, tx) => {
+            return acc + (parseFloat(tx.credit) - parseFloat(tx.debit));
+        }, 0);
+
+        calculatedInitialBalance += historicalFlow;
+    }
+
+    // 3. Obtener transacciones DEL MES solicitado
     const transactionsOfMonth = await db.CashFlowTransaction.findAll({
         where: {
             company_id: companyId,
+            status: 'ACTIVE',
             [Op.and]: [
                 db.sequelize.where(db.sequelize.fn('EXTRACT', db.sequelize.literal('YEAR FROM transaction_date')), year),
                 db.sequelize.where(db.sequelize.fn('EXTRACT', db.sequelize.literal('MONTH FROM transaction_date')), month),
-            ],
-            status: 'ACTIVE'
+            ]
         },
         order: [['created_at', 'ASC']],
-        attributes: ['resulting_balance', 'created_at'],
+        attributes: ['resulting_balance', 'debit', 'credit', 'created_at'],
     });
 
-    let finalBalance = initialBalance;
-    let sumOfBalances = 0;
-    const numberOfTransactions = transactionsOfMonth.length;
+    // 4. Cálculos del mes
+    let finalBalance = calculatedInitialBalance;
+    let sumOfBalances = 0; // Para el promedio
+    // Si no hay transacciones, el promedio es el saldo inicial constante
+    let accumulatedBalanceForAvg = calculatedInitialBalance * (transactionsOfMonth.length + 1); 
 
-    if (numberOfTransactions > 0) {
-        finalBalance = parseFloat(transactionsOfMonth[numberOfTransactions - 1].resulting_balance);
+    if (transactionsOfMonth.length > 0) {
+        // Opción A: Usar el resulting_balance de la última (más preciso si la data es consistente)
+        finalBalance = parseFloat(transactionsOfMonth[transactionsOfMonth.length - 1].resulting_balance);
+        
+        // Opción B (Cálculo manual para promedio):
+        let currentRunBalance = calculatedInitialBalance;
+        sumOfBalances = currentRunBalance; // Saldo día 0
+
         transactionsOfMonth.forEach(tx => {
-            sumOfBalances += parseFloat(tx.resulting_balance);
+            const flow = parseFloat(tx.credit) - parseFloat(tx.debit);
+            currentRunBalance += flow;
+            sumOfBalances += currentRunBalance;
         });
+        
+        accumulatedBalanceForAvg = sumOfBalances;
     }
 
-    const averageBalance = numberOfTransactions > 0
-        ? (sumOfBalances / numberOfTransactions)
-        : initialBalance;
+    // Promedio simple basado en hitos de movimiento
+    // (Nota: Un promedio diario exacto requeriría iterar por días, este es promedio transaccional)
+    const averageBalance = accumulatedBalanceForAvg / (transactionsOfMonth.length + 1);
 
     return {
         year,
         month,
-        initialBalance: initialBalance.toFixed(2),
+        initialBalance: calculatedInitialBalance.toFixed(2),
         finalBalance: finalBalance.toFixed(2),
         averageBalance: averageBalance.toFixed(2),
-        numberOfTransactions: numberOfTransactions
+        numberOfTransactions: transactionsOfMonth.length
     };
 };
 
