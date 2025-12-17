@@ -59,10 +59,11 @@ const setInitialMonthlyBalance = async (balanceData, companyId) => {
 
 /**
  * Crea una nueva transacción de flujo de caja.
- * NUEVO: Valida que user_id pertenece a company_id.
+ * NUEVO: Valida cuenta bancaria si se envía.
  */
 const createTransaction = async (transactionData, userId, companyId) => {
-    const { subcategory_id, transaction_date, method_id, concept, amount, evidence } = transactionData;
+    // Desestructuramos bank_account_id
+    const { subcategory_id, transaction_date, method_id, concept, amount, evidence, bank_account_id } = transactionData;
     let subcategory;
     let paymentMethod;
 
@@ -97,7 +98,39 @@ const createTransaction = async (transactionData, userId, companyId) => {
             throw new ApiError(httpStatus.BAD_REQUEST, 'El método de pago no es válido o no está activo.');
         }
 
-        // --- 3. Verificar Saldo Inicial de la Compañía ---
+        // =================================================================================
+        // 2.1. VALIDACIÓN DE CUENTA BANCARIA SEGÚN MÉTODO (AQUÍ ESTÁ LA LÓGICA)
+        // =================================================================================
+        const methodName = paymentMethod.method_name.toLowerCase();
+        
+        // Si NO es efectivo, la cuenta bancaria es OBLIGATORIA
+        if (methodName !== 'efectivo' && !bank_account_id) {
+            throw new ApiError(httpStatus.BAD_REQUEST, `Para el método '${paymentMethod.method_name}' es obligatorio seleccionar una cuenta bancaria.`);
+        }
+
+        // Si ES efectivo, forzamos bank_account_id a NULL (por si el front envió algo por error)
+        let finalAccountId = bank_account_id;
+        if (methodName === 'efectivo') {
+            finalAccountId = null;
+        }
+        
+        // --- 3. NUEVO: Validar Cuenta Bancaria (Opcional) ---
+        if (bank_account_id) {
+            const bankAccount = await db.BankAccount.findOne({
+                where: {
+                    account_id: bank_account_id,
+                    company_id: companyId,
+                    is_active: true
+                },
+                transaction: t
+            });
+
+            if (!bankAccount) {
+                throw new ApiError(httpStatus.BAD_REQUEST, 'La cuenta bancaria seleccionada no es válida, no pertenece a su empresa o está inactiva.');
+            }
+        }
+
+        // --- 4. Verificar Saldo Inicial de la Compañía ---
         const date = new Date(transaction_date);
         const year = date.getFullYear();
         const month = date.getMonth() + 1;
@@ -113,7 +146,7 @@ const createTransaction = async (transactionData, userId, companyId) => {
             throw new ApiError(httpStatus.BAD_REQUEST, 'El saldo inicial para este mes aún no ha sido configurado.');
         }
 
-        // --- 4. Encontrar la Última Transacción ACTIVA de la Compañía ---
+        // --- 5. Encontrar la Última Transacción ACTIVA de la Compañía ---
         const lastKnownTransaction = await db.CashFlowTransaction.findOne({
             where: {
                 company_id: companyId,
@@ -132,12 +165,13 @@ const createTransaction = async (transactionData, userId, companyId) => {
         const credit = subcategory.transaction_type === 'CREDIT' ? amount : 0.00;
         const resultingBalance = previousBalance + credit - debit;
 
-        // --- 5. Creación de la Transacción ---
+        // --- 6. Creación de la Transacción ---
         const createdTransaction = await db.CashFlowTransaction.create({
             company_id: companyId,
             user_id: userId,
             subcategory_id,
             method_id,
+            bank_account_id, // <-- Guardamos la referencia a la cuenta
             transaction_date: date,
             concept,
             debit,
@@ -145,7 +179,7 @@ const createTransaction = async (transactionData, userId, companyId) => {
             resulting_balance: resultingBalance,
         }, { transaction: t });
 
-        // --- 6. Manejo de Evidencia ---
+        // --- 7. Manejo de Evidencia ---
         if (evidence?.file_data && evidence?.file_name) {
             const matches = evidence.file_data.match(/^data:(.+);base64,(.+)$/);
             if (!matches) throw new ApiError(httpStatus.BAD_REQUEST, 'Formato de base64 inválido.');
@@ -175,7 +209,7 @@ const createTransaction = async (transactionData, userId, companyId) => {
         return createdTransaction;
     });
 
-    // --- 7. Notificaciones (Fire-and-Forget) ---
+    // --- 8. Notificaciones (Fire-and-Forget) ---
     try {
         const user = await db.User.findByPk(userId);
         const admins = await db.User.findAll({
@@ -222,7 +256,7 @@ const createTransaction = async (transactionData, userId, companyId) => {
 
 /**
  * Obtiene una lista paginada de transacciones de una compañía.
- * NUEVO: Filtra por company_id automáticamente.
+ * NUEVO: Incluye información de la cuenta bancaria.
  */
 const getTransactionsList = async (user, queryParams) => {
     const {
@@ -264,7 +298,7 @@ const getTransactionsList = async (user, queryParams) => {
     const subcategoryInclude = {
         model: db.Subcategory,
         as: 'subcategory',
-        attributes: ['subcategory_name'],
+        attributes: ['subcategory_name', 'transaction_type'],
         required: false,
         include: {
             model: db.Category,
@@ -288,6 +322,15 @@ const getTransactionsList = async (user, queryParams) => {
             { model: db.Evidence, as: 'evidences', attributes: ['evidence_id', 'original_filename'] },
             subcategoryInclude,
             { model: db.PaymentMethod, as: 'paymentMethod', attributes: ['method_name'] },
+            // NUEVO: Incluir información de la Cuenta Bancaria
+            { 
+                model: db.BankAccount, 
+                as: 'bankAccount', 
+                attributes: ['account_alias', 'account_number'],
+                include: [
+                    { model: db.Bank, as: 'bank', attributes: ['bank_name', 'bank_code'] }
+                ]
+            },
         ],
         limit,
         offset,
@@ -366,7 +409,7 @@ const cancelTransaction = async (transactionId, user) => {
         const originalTransaction = await db.CashFlowTransaction.findOne({
             where: {
                 transaction_id: transactionId,
-                company_id: user.company.company_id, // Validación de compañía
+                company_id: user.company.company_id,
                 status: 'ACTIVE',
             },
             transaction: t,
@@ -416,6 +459,7 @@ const cancelTransaction = async (transactionId, user) => {
             user_id: user.user_id,
             subcategory_id: originalTransaction.subcategory_id,
             method_id: originalTransaction.method_id,
+            bank_account_id: originalTransaction.bank_account_id, // NUEVO: Revertir en la misma cuenta
             transaction_date: new Date(),
             concept: `Reversión de transacción #${originalTransaction.transaction_id}: ${originalTransaction.concept}`,
             debit: reversalDebit,

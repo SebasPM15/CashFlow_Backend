@@ -14,6 +14,7 @@ const createTransaction = Joi.object().keys({
     subcategory_id: Joi.number().integer().positive().required(),
     transaction_date: Joi.date().iso().required(),
     method_id: Joi.number().integer().positive().required(),
+    bank_account_id: Joi.number().integer().positive().optional().allow(null),
     concept: Joi.string().trim().min(1).required(),
     amount: Joi.number().precision(2).positive().required(),
     evidence: Joi.object({
@@ -68,6 +69,12 @@ const getMonthlyBalance = Joi.object().keys({
     month: Joi.number().integer().min(1).max(12).required(),
 });
 
+// Schema para la recategorización (faltaba en tu lista, lo agrego por si acaso)
+const updateCategory = Joi.object().keys({
+    transactionId: Joi.number().integer().positive().required(),
+    newSubcategoryId: Joi.number().integer().positive().required(),
+});
+
 export const cashflowValidation = {
     getPaymentMethods,
     setMonthlyBalance,
@@ -78,5 +85,6 @@ export const cashflowValidation = {
     updateConcept,
     getEvidenceUrl,
     getSubcategories,
-    getMonthlyBalance
+    getMonthlyBalance,
+    updateCategory
 };
