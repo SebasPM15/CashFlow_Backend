@@ -131,76 +131,73 @@ const setInitialMonthlyBalance = async (balanceData, companyId) => {
  * Crea una nueva transacción.
  * Integra: Validación de Banco + Resolución Inteligente de Saldo.
  */
+/**
+ * Crea una nueva transacción.
+ * OPTIMIZADO: Manejo robusto de notificaciones por correo y slack.
+ */
 const createTransaction = async (transactionData, userId, companyId) => {
     const { subcategory_id, transaction_date, method_id, concept, amount, evidence, bank_account_id } = transactionData;
+    
     let subcategory;
     let paymentMethod;
 
+    // --- TRANSACCIÓN DE BASE DE DATOS ---
     const newTransaction = await db.sequelize.transaction(async (t) => {
-        // --- 1. Validar usuario y permisos ---
+        // 1. Validar usuario
         const user = await db.User.findOne({
             where: { user_id: userId, company_id: companyId },
             transaction: t
         });
         if (!user) throw new ApiError(httpStatus.FORBIDDEN, 'No tienes permiso para crear transacciones en esta compañía.');
 
-        // --- 2. Validaciones de Catálogo ---
+        // 2. Validar Subcategoría
         subcategory = await db.Subcategory.findByPk(subcategory_id, {
             include: [{ model: db.Category, as: 'category', attributes: ['category_name'] }],
             transaction: t
         });
         if (!subcategory) throw new ApiError(httpStatus.NOT_FOUND, 'La subcategoría especificada no existe.');
 
+        // 3. Validar Método de Pago
         paymentMethod = await db.PaymentMethod.findOne({ where: { method_id, is_active: true }, transaction: t });
         if (!paymentMethod) throw new ApiError(httpStatus.BAD_REQUEST, 'El método de pago no es válido.');
 
-        // --- 3. Validación de Cuenta Bancaria ---
+        // 4. Validar Cuenta Bancaria
         const methodName = paymentMethod.method_name.toLowerCase();
-        let finalAccountId = bank_account_id;
-
+        let accountIdToSave = bank_account_id;
+        
         if (methodName !== 'efectivo' && !bank_account_id) {
             throw new ApiError(httpStatus.BAD_REQUEST, `Para el método '${paymentMethod.method_name}' es obligatorio seleccionar una cuenta bancaria.`);
         }
-        if (methodName === 'efectivo') finalAccountId = null;
+        if (methodName === 'efectivo') {
+            accountIdToSave = null;
+        }
 
-        if (finalAccountId) {
+        if (accountIdToSave) {
             const bankAccount = await db.BankAccount.findOne({
-                where: { account_id: finalAccountId, company_id: companyId, is_active: true },
+                where: { account_id: accountIdToSave, company_id: companyId, is_active: true },
                 transaction: t
             });
             if (!bankAccount) throw new ApiError(httpStatus.BAD_REQUEST, 'La cuenta bancaria no es válida o está inactiva.');
         }
 
-        // --- 4. CÁLCULO DE SALDO (INTELIGENTE) ---
+        // 5. Resolver Saldo Inicial
         const date = new Date(transaction_date);
-        const year = date.getFullYear();
-        const month = date.getMonth() + 1;
-
-        // A. Resolver el saldo base para este periodo (Explícito o Heredado)
-        const resolvedBalance = await _resolveInitialBalance(companyId, year, month, t);
-
-        // B. Buscar la última transacción registrada (para encadenar)
+        const resolvedBalance = await _resolveInitialBalance(companyId, date.getFullYear(), date.getMonth() + 1, t);
+        
+        // 6. Calcular Saldo Resultante
         const lastKnownTransaction = await db.CashFlowTransaction.findOne({
             where: { company_id: companyId, status: 'ACTIVE' },
-            order: [['transaction_date', 'DESC'], ['created_at', 'DESC']],
+            order: [['created_at', 'DESC']],
             transaction: t
         });
 
         let previousBalance = resolvedBalance.value;
-
-        // C. Decidir continuidad
         if (lastKnownTransaction) {
-            // Si la última transacción es POSTERIOR a la fecha de inicio del saldo resuelto (Reinicio explícito),
-            // significa que el saldo resuelto es "nuevo" y manda. 
-            // Si no, seguimos la cadena de la transacción.
-
             const lastTxDate = new Date(lastKnownTransaction.transaction_date);
-            // Comparamos fechas: ¿El saldo inicial configurado es más reciente que la última transacción?
+            // Si el saldo explícito es más reciente que la última transacción, usamos el explícito (Reinicio)
             if (resolvedBalance.source === 'explicit' && resolvedBalance.date > lastTxDate) {
-                // Reinicio detectado (Ej: Tx es Dic 2024, pero configuré Enero 2025 manual)
                 previousBalance = resolvedBalance.value;
             } else {
-                // Continuidad normal
                 previousBalance = parseFloat(lastKnownTransaction.resulting_balance);
             }
         }
@@ -209,13 +206,13 @@ const createTransaction = async (transactionData, userId, companyId) => {
         const credit = subcategory.transaction_type === 'CREDIT' ? amount : 0.00;
         const resultingBalance = previousBalance + credit - debit;
 
-        // --- 5. Crear Transacción ---
+        // 7. Crear Registro
         const createdTransaction = await db.CashFlowTransaction.create({
             company_id: companyId,
             user_id: userId,
             subcategory_id,
             method_id,
-            bank_account_id: finalAccountId,
+            bank_account_id: accountIdToSave,
             transaction_date: date,
             concept,
             debit,
@@ -223,13 +220,13 @@ const createTransaction = async (transactionData, userId, companyId) => {
             resulting_balance: resultingBalance,
         }, { transaction: t });
 
-        // --- 6. Evidencia ---
+        // 8. Guardar Evidencia (si existe)
         if (evidence?.file_data && evidence?.file_name) {
             const matches = evidence.file_data.match(/^data:(.+);base64,(.+)$/);
             if (!matches) throw new ApiError(httpStatus.BAD_REQUEST, 'Formato de base64 inválido.');
             const buffer = Buffer.from(matches[2], 'base64');
             const newFilePath = await storageService.uploadEvidence(buffer, evidence.file_name, userId);
-
+            
             await db.Evidence.create({
                 transaction_id: createdTransaction.transaction_id,
                 file_path: newFilePath,
@@ -242,17 +239,33 @@ const createTransaction = async (transactionData, userId, companyId) => {
         return createdTransaction;
     });
 
-    // --- 7. Notificaciones ---
+    // --- BLOQUE DE NOTIFICACIONES (FUERA DE TRANSACCIÓN) ---
     try {
-        const user = await db.User.findByPk(userId);
-        const admins = await db.User.findAll({
-            where: { company_id: companyId, is_active: true },
-            include: { model: db.Role, as: 'role', where: { role_name: 'admin' } },
-        });
+        logger.info('Iniciando proceso de notificaciones...');
 
+        // 1. Obtener datos complementarios
+        const company = await db.Company.findByPk(companyId, { attributes: ['company_name'] });
+        const user = await db.User.findByPk(userId);
+        
+        let bankDetails = null;
+        if (newTransaction.bank_account_id) {
+            const bankAccountInfo = await db.BankAccount.findByPk(newTransaction.bank_account_id, {
+                include: [{ model: db.Bank, as: 'bank', attributes: ['bank_name'] }]
+            });
+            if (bankAccountInfo) {
+                bankDetails = {
+                    bankName: bankAccountInfo.bank.bank_name,
+                    accountAlias: bankAccountInfo.account_alias,
+                    accountNumber: bankAccountInfo.account_number
+                };
+            }
+        }
+
+        // 2. Preparar el objeto de detalles
         if (user) {
             const details = {
                 userFullName: `${user.first_name} ${user.last_name}`,
+                companyName: company.company_name,
                 concept: newTransaction.concept,
                 amount,
                 type: subcategory.transaction_type,
@@ -260,14 +273,40 @@ const createTransaction = async (transactionData, userId, companyId) => {
                 categoryName: subcategory.category.category_name,
                 subcategoryName: subcategory.subcategory_name,
                 methodName: paymentMethod.method_name,
+                bankDetails
             };
+
+            // 3. Notificar a Slack (Fire-and-forget pero con log)
+            // No usamos await aquí para que no bloquee el envío de emails, o viceversa, pero ambos son importantes.
+            const slackPromise = notificationService.sendNewTransactionNotification(details);
+
+            // 4. Notificar a Admins por Email
+            // Buscamos admins activos
+            const admins = await db.User.findAll({
+                where: { company_id: companyId, is_active: true },
+                include: { model: db.Role, as: 'role', where: { role_name: 'admin' } }, // Asegúrate que en BD sea 'admin' minúscula
+            });
+
+            logger.info(`Se encontraron ${admins.length} administradores para notificar por correo.`);
+
             if (admins.length > 0) {
-                admins.forEach(admin => emailService.sendNewTransactionNotification(admin.email, details).catch(() => { }));
+                // Usamos Promise.all para asegurar que se disparen todos los envíos
+                const emailPromises = admins.map(admin => 
+                    emailService.sendNewTransactionNotification(admin.email, details)
+                        .catch(err => logger.error(`Fallo envío email a ${admin.email}: ${err.message}`))
+                );
+                
+                await Promise.all(emailPromises); // Esperamos a que el servidor de correo acepte las peticiones
+            } else {
+                logger.warn(`No hay administradores con rol 'admin' en la compañía ${companyId} para enviar correos.`);
             }
-            await notificationService.sendNewTransactionNotification(details);
+
+            // Esperamos a que Slack termine también (opcional, pero recomendado para logs ordenados)
+            await slackPromise;
         }
     } catch (error) {
-        logger.error('Error notificaciones:', error);
+        logger.error('Error general en el bloque de notificaciones:', error);
+        // No lanzamos error aquí para no revertir la transacción financiera que ya fue exitosa
     }
 
     return newTransaction;

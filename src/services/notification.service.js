@@ -20,6 +20,7 @@ const webhook = new IncomingWebhook(config.slack.webhookUrl);
 const _formatTransactionMessage = (details) => {
     const {
         userFullName,
+        companyName, // NUEVO
         concept,
         amount,
         type,
@@ -27,54 +28,57 @@ const _formatTransactionMessage = (details) => {
         categoryName,
         subcategoryName,
         methodName,
+        bankDetails // NUEVO
     } = details;
 
-    // Formateamos los datos igual que en el template de email
-    const formattedAmount = new Intl.NumberFormat('en-US', {
-        style: 'currency',
-        currency: 'USD',
-    }).format(amount);
-    const transactionType = type === 'CREDIT' ? 'Ingreso (Crédito)' : 'Egreso (Débito)';
-    const formattedDate = transactionDate.toLocaleString('es-EC', {
-        timeZone: 'America/Guayaquil',
-    });
+    const formattedAmount = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(amount);
+    
+    // Formato de Fecha Mejorado
+    const dateObj = new Date(transactionDate);
+    // Capitalizamos la primera letra (ej: jueves -> Jueves)
+    const dateStr = dateObj.toLocaleDateString('es-EC', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+    const timeStr = dateObj.toLocaleTimeString('es-EC', { hour: '2-digit', minute: '2-digit', hour12: true });
+    const formattedDate = `${dateStr.charAt(0).toUpperCase() + dateStr.slice(1)} - ${timeStr}`;
+
     const amountPrefix = type === 'CREDIT' ? '+' : '-';
     const color = type === 'CREDIT' ? '#2E8B57' : '#D2122E';
+    const transactionType = type === 'CREDIT' ? 'Ingreso' : 'Egreso';
+
+    // Construcción dinámica de campos
+    const fields = [
+        { type: 'mrkdwn', text: `*Empresa:*\n${companyName}` },
+        { type: 'mrkdwn', text: `*Empleado:*\n${userFullName}` },
+        { type: 'mrkdwn', text: `*Fecha:*\n${formattedDate}` },
+        { type: 'mrkdwn', text: `*Concepto:*\n${concept}` },
+        { type: 'mrkdwn', text: `*Clasificación:*\n${subcategoryName} (${categoryName})` },
+        { type: 'mrkdwn', text: `*Método:*\n${methodName}` },
+    ];
+
+    // Si hay datos bancarios, los agregamos
+    if (bankDetails) {
+        fields.push({ 
+            type: 'mrkdwn', 
+            text: `*Cuenta Bancaria:*\n${bankDetails.bankName} - ${bankDetails.accountAlias}` 
+        });
+    }
+
+    // El monto siempre al final destacado
+    fields.push({ type: 'mrkdwn', text: `*Monto:*\n\`${amountPrefix}${formattedAmount}\` (${transactionType})` });
 
     return {
-        text: `Nueva transacción registrada: ${concept}`,
+        text: `Nueva transacción en ${companyName}: ${concept}`,
         blocks: [
             {
                 type: 'header',
-                text: {
-                    type: 'plain_text',
-                    text: '💸 Nueva Transacción Registrada',
-                },
+                text: { type: 'plain_text', text: '💸 Nueva Transacción Registrada' },
             },
             {
-                // --- MODIFICACIÓN: Añadimos los nuevos campos al layout ---
                 type: 'section',
-                fields: [
-                    { type: 'mrkdwn', text: `*Empleado:*\n${userFullName}` },
-                    { type: 'mrkdwn', text: `*Fecha y Hora:*\n${formattedDate}` },
-                    { type: 'mrkdwn', text: `*Concepto:*\n${concept}` },
-                    { type: 'mrkdwn', text: `*Tipo:*\n${transactionType}` },
-                    { type: 'mrkdwn', text: `*Categoría:*\n${categoryName}` },
-                    { type: 'mrkdwn', text: `*Subcategoría:*\n${subcategoryName}` },
-                    { type: 'mrkdwn', text: `*Método de Pago:*\n${methodName}` },
-                    { type: 'mrkdwn', text: `*Monto:*\n\`${amountPrefix}${formattedAmount}\`` },
-                ],
+                fields: fields,
             },
-            {
-                type: 'divider',
-            },
+            { type: 'divider' },
         ],
-        attachments: [
-            {
-                color: color,
-                blocks: [],
-            },
-        ],
+        attachments: [{ color: color, blocks: [] }],
     };
 };
 
