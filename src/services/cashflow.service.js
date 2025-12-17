@@ -27,39 +27,56 @@ const getPaymentMethodsList = async () => {
 };
 
 /**
- * Establece o actualiza el saldo inicial para un mes y año específicos.
+ * Establece el saldo inicial para un mes y año específicos de una compañía.
+ * CRÍTICO: Solo permite crear, no actualizar (inmutabilidad).
  */
-const setInitialMonthlyBalance = async (balanceData) => {
+const setInitialMonthlyBalance = async (balanceData, companyId) => {
     const { year, month, initialBalance } = balanceData;
 
-    const [monthlyBalance, created] = await db.MonthlyBalance.findOrCreate({
-        where: { year, month },
-        defaults: { year, month, initial_balance: initialBalance },
+    const [initialBalanceRecord, created] = await db.InitialBalance.findOrCreate({
+        where: {
+            company_id: companyId,
+            year,
+            month
+        },
+        defaults: {
+            company_id: companyId,
+            year,
+            month,
+            initial_balance: initialBalance
+        },
     });
 
-    // Si 'created' es falso, significa que el registro ya existía.
     if (!created) {
-        // Lanzamos un error de negocio claro.
         throw new ApiError(
-            httpStatus.CONFLICT, // 409 Conflict es el código ideal para esto.
+            httpStatus.CONFLICT,
             'El saldo inicial para este mes ya ha sido configurado y no puede ser modificado.'
         );
     }
 
-    // Si 'created' es true, la operación fue exitosa y devolvemos el nuevo registro.
-    return monthlyBalance;
+    return initialBalanceRecord;
 };
 
 /**
- * Crea una nueva transacción de flujo de caja, subiendo la evidencia a Supabase si se proporciona.
+ * Crea una nueva transacción de flujo de caja.
+ * NUEVO: Valida que user_id pertenece a company_id.
  */
-const createTransaction = async (transactionData, userId) => {
+const createTransaction = async (transactionData, userId, companyId) => {
     const { subcategory_id, transaction_date, method_id, concept, amount, evidence } = transactionData;
     let subcategory;
     let paymentMethod;
 
     const newTransaction = await db.sequelize.transaction(async (t) => {
-        // --- 1. Validaciones Iniciales ---
+        // --- 1. Validar que el usuario pertenece a la compañía ---
+        const user = await db.User.findOne({
+            where: { user_id: userId, company_id: companyId },
+            transaction: t
+        });
+        if (!user) {
+            throw new ApiError(httpStatus.FORBIDDEN, 'No tienes permiso para crear transacciones en esta compañía.');
+        }
+
+        // --- 2. Validaciones de Subcategoría y Método de Pago ---
         subcategory = await db.Subcategory.findByPk(subcategory_id, {
             include: [{
                 model: db.Category,
@@ -80,34 +97,44 @@ const createTransaction = async (transactionData, userId) => {
             throw new ApiError(httpStatus.BAD_REQUEST, 'El método de pago no es válido o no está activo.');
         }
 
+        // --- 3. Verificar Saldo Inicial de la Compañía ---
         const date = new Date(transaction_date);
         const year = date.getFullYear();
         const month = date.getMonth() + 1;
-        const monthlyBalance = await db.MonthlyBalance.findOne({ where: { year, month }, transaction: t });
-        if (!monthlyBalance) {
+        const initialBalance = await db.InitialBalance.findOne({
+            where: {
+                company_id: companyId,
+                year,
+                month
+            },
+            transaction: t
+        });
+        if (!initialBalance) {
             throw new ApiError(httpStatus.BAD_REQUEST, 'El saldo inicial para este mes aún no ha sido configurado.');
         }
 
-        // --- 2. Encontrar la última transacción REAL ---
-        // Buscamos la transacción con la fecha de creación ('created_at') más reciente.
-        // Esta es la última entrada real en nuestro "libro de contabilidad".
+        // --- 4. Encontrar la Última Transacción ACTIVA de la Compañía ---
         const lastKnownTransaction = await db.CashFlowTransaction.findOne({
-            where: { status: 'ACTIVE' },
-            order: [['created_at', 'DESC']], // La última que se guardó en la BD
+            where: {
+                company_id: companyId,
+                status: 'ACTIVE'
+            },
+            order: [['created_at', 'DESC']],
             limit: 1,
             transaction: t,
         });
 
         const previousBalance = lastKnownTransaction
             ? parseFloat(lastKnownTransaction.resulting_balance)
-            : parseFloat(monthlyBalance.initial_balance);
+            : parseFloat(initialBalance.initial_balance);
 
         const debit = subcategory.transaction_type === 'DEBIT' ? amount : 0.00;
         const credit = subcategory.transaction_type === 'CREDIT' ? amount : 0.00;
         const resultingBalance = previousBalance + credit - debit;
 
-        // --- 3. Creación del Nuevo Registro (sin cambios) ---
+        // --- 5. Creación de la Transacción ---
         const createdTransaction = await db.CashFlowTransaction.create({
+            company_id: companyId,
             user_id: userId,
             subcategory_id,
             method_id,
@@ -118,7 +145,7 @@ const createTransaction = async (transactionData, userId) => {
             resulting_balance: resultingBalance,
         }, { transaction: t });
 
-        // --- 5. Manejo de Evidencia (sin cambios) ---
+        // --- 6. Manejo de Evidencia ---
         if (evidence?.file_data && evidence?.file_name) {
             const matches = evidence.file_data.match(/^data:(.+);base64,(.+)$/);
             if (!matches) throw new ApiError(httpStatus.BAD_REQUEST, 'Formato de base64 inválido.');
@@ -148,11 +175,14 @@ const createTransaction = async (transactionData, userId) => {
         return createdTransaction;
     });
 
-    // --- 6. Notificación por Email (sin cambios) ---
+    // --- 7. Notificaciones (Fire-and-Forget) ---
     try {
         const user = await db.User.findByPk(userId);
         const admins = await db.User.findAll({
-            where: { is_active: true }, // Buena práctica
+            where: {
+                company_id: companyId,
+                is_active: true
+            },
             include: {
                 model: db.Role,
                 as: 'role',
@@ -161,7 +191,6 @@ const createTransaction = async (transactionData, userId) => {
         });
 
         if (user) {
-            // 1. Preparamos el objeto 'details' (DRY)
             const details = {
                 userFullName: `${user.first_name} ${user.last_name}`,
                 concept: newTransaction.concept,
@@ -173,38 +202,27 @@ const createTransaction = async (transactionData, userId) => {
                 methodName: paymentMethod.method_name,
             };
 
-            // 2. Notificación por Email (si el admin existe)
             if (admins && admins.length > 0) {
-                // Usamos un bucle para enviar el correo a cada admin
                 for (const admin of admins) {
-                    // Se envían en paralelo (no usamos await)
                     emailService.sendNewTransactionNotification(admin.email, details)
                         .catch(err => {
-                            logger.error(`Error al enviar email de notificación al admin ${admin.email}: ${err.message}`);
+                            logger.error(`Error al enviar email al admin ${admin.email}: ${err.message}`);
                         });
                 }
-            } else {
-                logger.warn('No se encontraron usuarios admin activos para enviar la notificación por email.');
             }
 
-            // 3. NUEVO: Notificación por Slack (Fire-and-Forget)
-            // Esta función está diseñada para no lanzar errores.
             await notificationService.sendNewTransactionNotification(details);
-
-        } else {
-            logger.warn('No se encontró el usuario que creó la transacción, no se enviarán notificaciones.');
         }
     } catch (error) {
-        // Este catch ahora captura errores en la *preparación* (ej. db.User.findByPk)
-        logger.error('Error al preparar las notificaciones post-transacción.', { error: error.message });
+        logger.error('Error al preparar notificaciones post-transacción.', { error: error.message });
     }
 
     return newTransaction;
 };
 
 /**
- * Obtiene una lista paginada de transacciones, incluyendo sus evidencias.
- * (VERSIÓN CORREGIDA PARA FILTRO DE CATEGORÍA)
+ * Obtiene una lista paginada de transacciones de una compañía.
+ * NUEVO: Filtra por company_id automáticamente.
  */
 const getTransactionsList = async (user, queryParams) => {
     const {
@@ -213,15 +231,17 @@ const getTransactionsList = async (user, queryParams) => {
         userId: adminUserIdFilter,
         startDate,
         endDate,
-        categoryId, // <-- Lo usaremos en el include anidado
+        categoryId,
         subcategoryId,
         methodId,
     } = queryParams;
 
     const offset = (page - 1) * limit;
 
-    // --- CONSTRUCCIÓN DINÁMICA DE LA CONSULTA ---
-    const whereClause = {};
+    // --- CONSTRUCCIÓN DE WHERE CLAUSE ---
+    const whereClause = {
+        company_id: user.company.company_id // FILTRO POR COMPAÑÍA
+    };
 
     if (user.role.role_name === 'employee') {
         whereClause.user_id = user.user_id;
@@ -229,11 +249,9 @@ const getTransactionsList = async (user, queryParams) => {
         whereClause.user_id = adminUserIdFilter;
     }
 
-    // Filtros directos a la tabla 'cash_flow_transactions'
     if (methodId) whereClause.method_id = methodId;
     if (subcategoryId) whereClause.subcategory_id = subcategoryId;
 
-    // Filtro por rango de fechas
     if (startDate && endDate) {
         whereClause.transaction_date = { [Op.between]: [new Date(startDate), new Date(endDate)] };
     } else if (startDate) {
@@ -242,43 +260,34 @@ const getTransactionsList = async (user, queryParams) => {
         whereClause.transaction_date = { [Op.lte]: new Date(endDate) };
     }
 
-    // --- CORRECCIÓN DE LÓGICA DE INCLUDE ---
-    // Construimos la inclusión de Subcategoría y Categoría
+    // --- CONSTRUCCIÓN DE INCLUDES ---
     const subcategoryInclude = {
         model: db.Subcategory,
         as: 'subcategory',
         attributes: ['subcategory_name'],
-        required: false, // Por defecto es LEFT JOIN
+        required: false,
         include: {
             model: db.Category,
             as: 'category',
             attributes: ['category_name'],
-            required: false, // Por defecto es LEFT JOIN
+            required: false,
         },
     };
 
-    // *** ESTA ES LA CORRECCIÓN ***
-    // Si se proporciona un categoryId, modificamos el "include" anidado
     if (categoryId) {
-        // 1. Añadimos el 'where' DENTRO del include de Category
         subcategoryInclude.include.where = { category_id: categoryId };
-        // 2. Forzamos un INNER JOIN en ambas tablas
         subcategoryInclude.include.required = true;
         subcategoryInclude.required = true;
     }
 
-    // Ejecutar la consulta final
+    // --- EJECUTAR CONSULTA ---
     const { count, rows } = await db.CashFlowTransaction.findAndCountAll({
         where: whereClause,
         include: [
             { model: db.User, as: 'user', attributes: ['user_id', 'first_name', 'last_name'] },
             { model: db.Evidence, as: 'evidences', attributes: ['evidence_id', 'original_filename'] },
-            subcategoryInclude, // <-- Usamos nuestro include dinámico
-            {
-                model: db.PaymentMethod,
-                as: 'paymentMethod',
-                attributes: ['method_name'],
-            },
+            subcategoryInclude,
+            { model: db.PaymentMethod, as: 'paymentMethod', attributes: ['method_name'] },
         ],
         limit,
         offset,
@@ -295,16 +304,25 @@ const getTransactionsList = async (user, queryParams) => {
 };
 
 /**
- * Añade o actualiza la evidencia de una transacción existente en Supabase Storage.
+ * Añade o actualiza la evidencia de una transacción.
+ * NUEVO: Valida que la transacción pertenece a la compañía del usuario.
  */
 const upsertEvidence = async (transactionId, evidenceData, user) => {
     const { file_name, file_data } = evidenceData;
 
     return await db.sequelize.transaction(async (t) => {
-        const transaction = await db.CashFlowTransaction.findByPk(transactionId, { transaction: t });
+        const transaction = await db.CashFlowTransaction.findOne({
+            where: {
+                transaction_id: transactionId,
+                company_id: user.company.company_id // Validación de compañía
+            },
+            transaction: t
+        });
+
         if (!transaction) {
-            throw new ApiError(httpStatus.NOT_FOUND, 'La transacción especificada no existe.');
+            throw new ApiError(httpStatus.NOT_FOUND, 'La transacción especificada no existe o no pertenece a tu compañía.');
         }
+
         if (user.role.role_name === 'employee' && transaction.user_id !== user.user_id) {
             throw new ApiError(httpStatus.FORBIDDEN, 'No tienes permiso para modificar esta transacción.');
         }
@@ -323,7 +341,7 @@ const upsertEvidence = async (transactionId, evidenceData, user) => {
 
         const allowedTypes = ['application/pdf', 'image/jpeg', 'image/png'];
         if (!allowedTypes.includes(mime_type)) {
-            throw new ApiError(httpStatus.BAD_REQUEST, 'Tipo de archivo no permitido. Solo se aceptan PDF, JPG o PNG.');
+            throw new ApiError(httpStatus.BAD_REQUEST, 'Tipo de archivo no permitido.');
         }
 
         const fileSizeInMB = buffer.length / (1024 * 1024);
@@ -345,57 +363,56 @@ const upsertEvidence = async (transactionId, evidenceData, user) => {
 
 const cancelTransaction = async (transactionId, user) => {
     return await db.sequelize.transaction(async (t) => {
-        // --- 1. Buscar la transacción original y activa (sin cambios) ---
         const originalTransaction = await db.CashFlowTransaction.findOne({
             where: {
                 transaction_id: transactionId,
+                company_id: user.company.company_id, // Validación de compañía
                 status: 'ACTIVE',
             },
             transaction: t,
         });
 
         if (!originalTransaction) {
-            throw new ApiError(httpStatus.NOT_FOUND, 'La transacción activa especificada no existe o ya ha sido cancelada.');
+            throw new ApiError(httpStatus.NOT_FOUND, 'La transacción activa no existe o no pertenece a tu compañía.');
         }
 
-        // --- 2. Validar permisos (sin cambios) ---
         if (user.role.role_name === 'employee' && originalTransaction.user_id !== user.user_id) {
             throw new ApiError(httpStatus.FORBIDDEN, 'No tienes permiso para cancelar esta transacción.');
         }
 
-        // --- 3. Marcar la transacción original como 'CANCELLED' ---
         originalTransaction.status = 'CANCELLED';
         await originalTransaction.save({ transaction: t });
 
-        // --- 4. Crear la transacción de reversión (Lógica corregida) ---
-        // CORRECCIÓN: Se busca la última transacción ACTIVA, igual que en createTransaction.
         const lastKnownTransaction = await db.CashFlowTransaction.findOne({
-            where: { status: 'ACTIVE' },
+            where: {
+                company_id: user.company.company_id,
+                status: 'ACTIVE'
+            },
             order: [['created_at', 'DESC']],
             limit: 1,
             transaction: t,
         });
 
-        // Si no hay ninguna transacción activa, el saldo previo es el inicial del mes.
-        // Esto cubre el caso de que se cancele la única transacción existente.
         const date = new Date(originalTransaction.transaction_date);
-        const monthlyBalance = await db.MonthlyBalance.findOne({
-            where: { year: date.getFullYear(), month: date.getMonth() + 1 },
+        const initialBalance = await db.InitialBalance.findOne({
+            where: {
+                company_id: user.company.company_id,
+                year: date.getFullYear(),
+                month: date.getMonth() + 1
+            },
             transaction: t
         });
 
         const previousBalance = lastKnownTransaction
             ? parseFloat(lastKnownTransaction.resulting_balance)
-            : parseFloat(monthlyBalance.initial_balance);
+            : parseFloat(initialBalance.initial_balance);
 
-        // CORRECCIÓN: Se convierten a número los valores de débito/crédito para evitar el NaN.
         const reversalDebit = parseFloat(originalTransaction.credit);
         const reversalCredit = parseFloat(originalTransaction.debit);
-
-        // El cálculo ahora es seguro y siempre producirá un número.
         const resultingBalance = previousBalance + reversalCredit - reversalDebit;
 
         const reversalTransaction = await db.CashFlowTransaction.create({
+            company_id: user.company.company_id,
             user_id: user.user_id,
             subcategory_id: originalTransaction.subcategory_id,
             method_id: originalTransaction.method_id,
@@ -412,126 +429,231 @@ const cancelTransaction = async (transactionId, user) => {
 };
 
 const updateTransactionConcept = async (transactionId, newConcept, user) => {
-    // 1. Buscamos la transacción por su clave primaria.
-    const transaction = await db.CashFlowTransaction.findByPk(transactionId);
+    const transaction = await db.CashFlowTransaction.findOne({
+        where: {
+            transaction_id: transactionId,
+            company_id: user.company.company_id
+        }
+    });
 
-    // 2. Validamos que la transacción exista.
     if (!transaction) {
-        throw new ApiError(httpStatus.NOT_FOUND, 'La transacción especificada no existe.');
+        throw new ApiError(httpStatus.NOT_FOUND, 'La transacción no existe o no pertenece a tu compañía.');
     }
-
-    // 3. Verificamos los permisos: un empleado solo puede editar sus propias transacciones.
     if (user.role.role_name === 'employee' && transaction.user_id !== user.user_id) {
         throw new ApiError(httpStatus.FORBIDDEN, 'No tienes permiso para modificar esta transacción.');
     }
 
-    // 4. Actualizamos el campo 'concept'.
     transaction.concept = newConcept;
-
-    // 5. Guardamos el cambio en la base de datos.
     await transaction.save();
 
-    // 6. Devolvemos la instancia de la transacción con el campo actualizado.
     return transaction;
 };
 
+/**
+    Obtiene una URL firmada para descargar una evidencia.
+*/
 const getEvidenceDownloadUrl = async (evidenceId, user) => {
-    // 1. Buscamos la evidencia (esto ya incluye original_filename si tu modelo está bien)
     const evidence = await db.Evidence.findOne({
         where: { evidence_id: evidenceId },
         include: {
             model: db.CashFlowTransaction,
             as: 'transaction',
-            attributes: ['user_id'],
+            attributes: ['user_id', 'company_id'],
         },
     });
-
     if (!evidence) {
         throw new ApiError(httpStatus.NOT_FOUND, 'La evidencia solicitada no existe.');
     }
-
-    // 2. Validamos permisos (sin cambios)
+    if (evidence.transaction.company_id !== user.company.company_id) {
+        throw new ApiError(httpStatus.FORBIDDEN, 'No tienes permiso para acceder a esta evidencia.');
+    }
     const transactionOwnerId = evidence.transaction.user_id;
     if (user.role.role_name === 'employee' && transactionOwnerId !== user.user_id) {
         throw new ApiError(httpStatus.FORBIDDEN, 'No tienes permiso para acceder a esta evidencia.');
     }
-
-    // 3. CORRECCIÓN: Llamamos al servicio de almacenamiento pasándole los TRES argumentos.
     const signedUrl = await storageService.getSignedUrlForEvidence(
-        evidence.file_path,         // El path del archivo en Supabase
-        evidence.mime_type,        // El tipo MIME
-        evidence.original_filename // <-- EL NOMBRE ORIGINAL
+        evidence.file_path,
+        evidence.mime_type,
+        evidence.original_filename
     );
-
-    // 4. Devolvemos la URL (sin cambios)
     return { downloadUrl: signedUrl };
 };
 
 /**
- * Obtiene el saldo inicial, final y calcula el saldo promedio para un mes y año específicos.
- * El saldo promedio se calcula como la suma de los saldos resultantes de cada transacción
- * del mes, dividido por el número de transacciones en ese mes.
- * @param {object} queryData - Datos para la búsqueda.
- * @param {number} queryData.year - El año.
- * @param {number} queryData.month - El mes.
- * @returns {Promise<object>} Objeto con initialBalance, finalBalance y averageBalance.
- */
-const getMonthlyBalance = async (queryData) => {
+    Obtiene el saldo inicial, final y promedio de un mes para una compañía.
+*/
+const getMonthlyBalance = async (queryData, companyId) => {
     const { year, month } = queryData;
-
-    // 1. Buscar el saldo inicial (sin cambios)
-    const monthlyBalanceRecord = await db.MonthlyBalance.findOne({
-        where: { year, month },
+    const initialBalanceRecord = await db.InitialBalance.findOne({
+        where: {
+            company_id: companyId,
+            year,
+            month
+        },
     });
-
-    if (!monthlyBalanceRecord) {
+    if (!initialBalanceRecord) {
         throw new ApiError(httpStatus.NOT_FOUND, `No se encontró un saldo inicial configurado para ${month}/${year}.`);
     }
-    const initialBalance = parseFloat(monthlyBalanceRecord.initial_balance);
-
-    // 2. Buscar TODAS las transacciones ACTIVAS de ese mes
+    const initialBalance = parseFloat(initialBalanceRecord.initial_balance);
     const transactionsOfMonth = await db.CashFlowTransaction.findAll({
         where: {
-            // Filtrar por año y mes
+            company_id: companyId,
             [Op.and]: [
                 db.sequelize.where(db.sequelize.fn('EXTRACT', db.sequelize.literal('YEAR FROM transaction_date')), year),
                 db.sequelize.where(db.sequelize.fn('EXTRACT', db.sequelize.literal('MONTH FROM transaction_date')), month),
             ],
-            status: 'ACTIVE' // Considerar solo transacciones activas
+            status: 'ACTIVE'
         },
-        order: [['created_at', 'ASC']], // Ordenar para encontrar el final fácilmente
-        attributes: ['resulting_balance', 'created_at'], // Solo necesitamos el saldo resultante
+        order: [['created_at', 'ASC']],
+        attributes: ['resulting_balance', 'created_at'],
     });
-
-    // 3. Determinar el saldo final y calcular la suma para el promedio
-    let finalBalance = initialBalance; // Por defecto, si no hay transacciones
+    let finalBalance = initialBalance;
     let sumOfBalances = 0;
     const numberOfTransactions = transactionsOfMonth.length;
-
     if (numberOfTransactions > 0) {
-        // El saldo final es el de la última transacción registrada en ese mes
-        finalBalance = parseFloat(transactionsOfMonth[transactionsOfMonth.length - 1].resulting_balance);
-
-        // Sumar todos los saldos resultantes
+        finalBalance = parseFloat(transactionsOfMonth[numberOfTransactions - 1].resulting_balance);
         transactionsOfMonth.forEach(tx => {
             sumOfBalances += parseFloat(tx.resulting_balance);
         });
     }
-
-    // 4. Calcular el saldo promedio según la fórmula proporcionada
     const averageBalance = numberOfTransactions > 0
         ? (sumOfBalances / numberOfTransactions)
-        : initialBalance; // Si no hay transacciones, el promedio es el saldo inicial
-
-    // 5. Devolver los valores
+        : initialBalance;
     return {
         year,
         month,
         initialBalance: initialBalance.toFixed(2),
         finalBalance: finalBalance.toFixed(2),
-        averageBalance: averageBalance.toFixed(2), // Promedio de los saldos de transacción
-        numberOfTransactions: numberOfTransactions // Dato extra útil
+        averageBalance: averageBalance.toFixed(2),
+        numberOfTransactions: numberOfTransactions
     };
+};
+
+/**
+ * Actualiza la subcategoría de una transacción existente.
+ * RESTRICCIÓN CRÍTICA: Solo permite cambiar a una subcategoría del mismo tipo (DEBIT/CREDIT)
+ * para mantener la consistencia contable.
+ * IMPORTANTE: Recalcula TODOS los saldos posteriores en la cadena.
+ */
+const updateTransactionSubcategory = async (transactionId, newSubcategoryId, user) => {
+    return await db.sequelize.transaction(async (t) => {
+        const transaction = await db.CashFlowTransaction.findOne({
+            where: {
+                transaction_id: transactionId,
+                company_id: user.company.company_id,
+                status: 'ACTIVE'
+            },
+            include: [{
+                model: db.Subcategory,
+                as: 'subcategory',
+                attributes: ['subcategory_id', 'subcategory_name', 'transaction_type']
+            }],
+            transaction: t
+        });
+        if (!transaction) {
+            throw new ApiError(httpStatus.NOT_FOUND, 'La transacción no existe o no pertenece a tu compañía.');
+        }
+
+        if (transaction.subcategory_id === newSubcategoryId) {
+            throw new ApiError(httpStatus.BAD_REQUEST, 'La transacción ya tiene asignada esa subcategoría.');
+        }
+
+        const newSubcategory = await db.Subcategory.findByPk(newSubcategoryId, {
+            include: [{
+                model: db.Category,
+                as: 'category',
+                attributes: ['category_name']
+            }],
+            transaction: t
+        });
+
+        if (!newSubcategory) {
+            throw new ApiError(httpStatus.NOT_FOUND, 'La nueva subcategoría no existe.');
+        }
+
+        const originalType = transaction.subcategory.transaction_type;
+        const newType = newSubcategory.transaction_type;
+
+        if (originalType !== newType) {
+            throw new ApiError(
+                httpStatus.BAD_REQUEST,
+                `No se puede cambiar a una subcategoría de tipo diferente.`
+            );
+        }
+
+        const oldSubcategoryName = transaction.subcategory.subcategory_name;
+        transaction.subcategory_id = newSubcategoryId;
+        transaction.concept = `${transaction.concept} [Subcategoría actualizada de "${oldSubcategoryName}" a "${newSubcategory.subcategory_name}"]`;
+
+        await transaction.save({ transaction: t });
+
+        const lastTxBeforeUpdated = await db.CashFlowTransaction.findOne({
+            where: {
+                company_id: user.company.company_id,
+                status: 'ACTIVE',
+                created_at: { [Op.lt]: transaction.created_at }
+            },
+            order: [['created_at', 'DESC']],
+            limit: 1,
+            transaction: t
+        });
+
+        let currentBalance;
+        if (lastTxBeforeUpdated) {
+            currentBalance = parseFloat(lastTxBeforeUpdated.resulting_balance);
+        } else {
+            const date = new Date(transaction.transaction_date);
+            const initialBalance = await db.InitialBalance.findOne({
+                where: {
+                    company_id: user.company.company_id,
+                    year: date.getFullYear(),
+                    month: date.getMonth() + 1
+                },
+                transaction: t
+            });
+            if (!initialBalance) throw new ApiError(httpStatus.INTERNAL_SERVER_ERROR, 'Saldo inicial no encontrado.');
+            currentBalance = parseFloat(initialBalance.initial_balance);
+        }
+
+        const subsequentTransactions = await db.CashFlowTransaction.findAll({
+            where: {
+                company_id: user.company.company_id,
+                status: 'ACTIVE',
+                created_at: { [Op.gte]: transaction.created_at }
+            },
+            order: [['created_at', 'ASC']],
+            transaction: t
+        });
+
+        for (const tx of subsequentTransactions) {
+            const debit = parseFloat(tx.debit);
+            const credit = parseFloat(tx.credit);
+            const newBalance = currentBalance + credit - debit;
+
+            tx.resulting_balance = newBalance;
+            await tx.save({ transaction: t });
+
+            currentBalance = newBalance;
+        }
+
+        logger.info(`Recalculados ${subsequentTransactions.length} saldos desde transacción #${transactionId}`);
+
+        return await db.CashFlowTransaction.findByPk(transactionId, {
+            include: [
+                {
+                    model: db.Subcategory,
+                    as: 'subcategory',
+                    attributes: ['subcategory_name'],
+                    include: {
+                        model: db.Category,
+                        as: 'category',
+                        attributes: ['category_name']
+                    }
+                }
+            ],
+            transaction: t
+        });
+    });
 };
 
 export default {
@@ -543,5 +665,6 @@ export default {
     cancelTransaction,
     updateTransactionConcept,
     getEvidenceDownloadUrl,
-    getMonthlyBalance
+    getMonthlyBalance,
+    updateTransactionSubcategory
 };

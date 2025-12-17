@@ -49,6 +49,9 @@ const env = cleanEnv(process.env, {
     EMAIL_USER: str({ devDefault: 'testuser' }),
     EMAIL_PASS: str({ devDefault: 'testpass' }),
     EMAIL_FROM: str({ default: '"MyApp" <no-reply@myapp.com>' }),
+
+    // FRONTEND
+    FRONTEND_URL: url({ default: 'http://localhost:3000' }),
 });
 
 // Organiza la configuración en un objeto anidado y estructurado
@@ -61,6 +64,7 @@ const config = {
     server: {
         host: env.HOST,
         port: env.PORT,
+        frontendUrl: env.FRONTEND_URL,
     },
     database: {
         url: env.DATABASE_URL,

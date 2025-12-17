@@ -9,13 +9,13 @@ const User = sequelize.define('User', {
         primaryKey: true,
         autoIncrement: true,
     },
-    role_id: {
+    company_id: {
         type: DataTypes.INTEGER,
         allowNull: false,
     },
-    company_ruc: {
-        type: DataTypes.STRING(13),
-        allowNull: true, // RUC es opcional
+    role_id: {
+        type: DataTypes.INTEGER,
+        allowNull: false,
     },
     first_name: {
         type: DataTypes.STRING(255),
@@ -64,7 +64,6 @@ const User = sequelize.define('User', {
     timestamps: true,
     createdAt: 'created_at',
     updatedAt: 'updated_at',
-    // Por seguridad, nunca devolvemos el hash de la contraseña por defecto
     defaultScope: {
         attributes: { exclude: ['password_hash'] },
     },

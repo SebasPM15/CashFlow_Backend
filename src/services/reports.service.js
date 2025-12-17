@@ -386,9 +386,152 @@ const getBalanceValidationReport = async (reportData, user) => {
     };
 };
 
+/**
+ * Genera el Análisis Financiero Anual.
+ * Soporta continuidad histórica entre años.
+ */
+const getFinancialAnalysis = async (companyId, year) => {
+    const startDate = new Date(`${year}-01-01T00:00:00.000Z`);
+    const endDate = new Date(`${year}-12-31T23:59:59.999Z`);
+
+    // 1. Obtener transacciones del año solicitado
+    const transactions = await db.CashFlowTransaction.findAll({
+        where: {
+            company_id: companyId,
+            status: 'ACTIVE',
+            transaction_date: { [Op.between]: [startDate, endDate] }
+        },
+        attributes: ['transaction_date', 'debit', 'credit'],
+        include: [{
+            model: db.Subcategory,
+            as: 'subcategory',
+            attributes: ['subcategory_name'],
+            include: [{
+                model: db.Category,
+                as: 'category',
+                attributes: ['category_name']
+            }]
+        }],
+        order: [['transaction_date', 'ASC']]
+    });
+
+    // 2. Obtener saldos iniciales manuales del año
+    const initialBalances = await db.InitialBalance.findAll({
+        where: { company_id: companyId, year: year },
+        raw: true
+    });
+
+    const balancesMap = {};
+    initialBalances.forEach(b => {
+        balancesMap[b.month] = parseFloat(b.initial_balance);
+    });
+
+    // 3. --- LÓGICA DE CONTINUIDAD HISTÓRICA (MEJORADA) ---
+    let currentBalance = 0.00;
+
+    // Caso A: ¿El admin configuró manualmente el inicio de Enero?
+    if (balancesMap[1] !== undefined) {
+        currentBalance = balancesMap[1];
+    } 
+    // Caso B: Si no, buscamos el saldo final histórico (arrastre del año anterior)
+    else {
+        const lastTxPreviousYear = await db.CashFlowTransaction.findOne({
+            where: {
+                company_id: companyId,
+                status: 'ACTIVE',
+                transaction_date: { [Op.lt]: startDate } // Buscar todo lo anterior al 1 de Enero
+            },
+            order: [['transaction_date', 'DESC'], ['created_at', 'DESC']], // La última absoluta
+            attributes: ['resulting_balance']
+        });
+
+        if (lastTxPreviousYear) {
+            currentBalance = parseFloat(lastTxPreviousYear.resulting_balance);
+        }
+    }
+    // -----------------------------------------------------
+
+    const monthlyData = [];
+    const monthNames = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"];
+
+    const MACRO_CATEGORIES = {
+        OPERATIONAL: 'Movimientos Operacionales',
+        INVESTMENT: 'Movimientos de Inversión',
+        EXTERNAL: 'Movimientos Financiamiento Externo',
+        INTERNAL: 'Movimientos Financiamiento Interno'
+    };
+
+    // 4. Iterar por cada mes
+    for (let i = 0; i < 12; i++) {
+        const currentMonthNum = i + 1;
+
+        // Verificar reinicio manual de saldo en este mes específico
+        if (balancesMap[currentMonthNum] !== undefined) {
+            currentBalance = balancesMap[currentMonthNum];
+        }
+
+        const txsInMonth = transactions.filter(tx => {
+            const d = new Date(tx.transaction_date);
+            // Usamos getUTCMonth para consistencia con ISO dates
+            return d.getUTCMonth() === i;
+        });
+
+        const monthSummary = {
+            month: monthNames[i],
+            saldoInicial: parseFloat(currentBalance.toFixed(2)),
+            flows: { operational: 0, investment: 0, external: 0, internal: 0 },
+            details: { operational: {}, investment: {}, external: {}, internal: {} }
+        };
+
+        txsInMonth.forEach(tx => {
+            const categoryName = tx.subcategory.category.category_name;
+            const subName = tx.subcategory.subcategory_name;
+            const amount = parseFloat(tx.credit) - parseFloat(tx.debit);
+
+            if (categoryName === MACRO_CATEGORIES.OPERATIONAL) {
+                monthSummary.flows.operational += amount;
+                monthSummary.details.operational[subName] = (monthSummary.details.operational[subName] || 0) + amount;
+            } else if (categoryName === MACRO_CATEGORIES.INVESTMENT) {
+                monthSummary.flows.investment += amount;
+                monthSummary.details.investment[subName] = (monthSummary.details.investment[subName] || 0) + amount;
+            } else if (categoryName === MACRO_CATEGORIES.EXTERNAL) {
+                monthSummary.flows.external += amount;
+                monthSummary.details.external[subName] = (monthSummary.details.external[subName] || 0) + amount;
+            } else if (categoryName === MACRO_CATEGORIES.INTERNAL) {
+                monthSummary.flows.internal += amount;
+                monthSummary.details.internal[subName] = (monthSummary.details.internal[subName] || 0) + amount;
+            }
+        });
+
+        const netFlow = monthSummary.flows.operational + monthSummary.flows.investment + monthSummary.flows.external + monthSummary.flows.internal;
+        const finalBalance = monthSummary.saldoInicial + netFlow;
+
+        monthlyData.push({
+            month: monthSummary.month,
+            saldoInicial: monthSummary.saldoInicial,
+            saldoFinal: parseFloat(finalBalance.toFixed(2)),
+            flujoNeto: parseFloat(netFlow.toFixed(2)),
+            flujoOperacional: parseFloat(monthSummary.flows.operational.toFixed(2)),
+            flujoInversion: parseFloat(monthSummary.flows.investment.toFixed(2)),
+            flujoFinancieroExt: parseFloat(monthSummary.flows.external.toFixed(2)),
+            flujoFinancieroInt: parseFloat(monthSummary.flows.internal.toFixed(2)),
+            detalles: monthSummary.details
+        });
+
+        currentBalance = finalBalance;
+    }
+
+    return {
+        year,
+        companyId,
+        reportData: monthlyData
+    };
+};
+
 export default {
     getPeriodicReport,
     getReportByCategory,
     getSalesExpenseReport,
     getBalanceValidationReport,
+    getFinancialAnalysis
 };

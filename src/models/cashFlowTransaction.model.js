@@ -9,20 +9,21 @@ const CashFlowTransaction = sequelize.define('CashFlowTransaction', {
         primaryKey: true,
         autoIncrement: true,
     },
+    company_id: {
+        type: DataTypes.INTEGER,
+        allowNull: false,
+    },
     user_id: {
         type: DataTypes.INTEGER,
         allowNull: false,
-        // La relación se definirá en src/models/index.js
     },
     subcategory_id: {
         type: DataTypes.INTEGER,
         allowNull: false,
-        // La relación se definirá en src/models/index.js
     },
     method_id: {
         type: DataTypes.INTEGER,
         allowNull: false,
-        // La relación se definirá en src/models/index.js
     },
     transaction_date: {
         type: DataTypes.DATE, // Mapea a TIMESTAMPTZ para precisión de fecha y hora

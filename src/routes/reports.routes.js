@@ -5,7 +5,7 @@ import { reportsController } from '../controllers/reports.controller.js';
 import { secureEndpoint, checkStatefulSession, authorizeRole } from '../middlewares/auth.middleware.js';
 import tramaValidator from '../middlewares/trama.middleware.js';
 import { validate } from '../middlewares/validate.middleware.js';
-import { reportsValidation } from '../validations/reports.validation.js';
+import { reportsValidation, financialAnalysisSchema } from '../validations/reports.validation.js';
 
 const router = Router();
 
@@ -56,6 +56,17 @@ router.post(
     authorizeRole('admin'), // Protegido solo para admin
     validate(reportsValidation.getPeriodicReport), // Reutiliza la misma validación
     reportsController.getBalanceValidationReport
+);
+
+// Endpoint para el Análisis Financiero Anual
+router.post(
+    '/financial-analysis',
+    tramaValidator,
+    secureEndpoint,
+    checkStatefulSession,
+    authorizeRole('admin'), // Protegido solo para admin
+    validate(financialAnalysisSchema), 
+    reportsController.getFinancialAnalysis
 );
 
 export default router;

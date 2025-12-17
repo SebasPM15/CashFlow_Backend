@@ -40,11 +40,23 @@ export const secureEndpoint = asyncHandler(async (req, res, next) => {
     }
 
     const user = await db.User.findByPk(decoded.sub, {
-        include: { model: db.Role, as: 'role' },
+        include: [
+            { model: db.Role, as: 'role' },
+            { 
+                model: db.Company, 
+                as: 'company', 
+                attributes: ['company_id', 'company_name', 'company_ruc', 'is_active'] 
+            }
+        ],
     });
 
     if (!user || !user.is_active) {
         throw new ApiError(httpStatus.UNAUTHORIZED, 'El usuario asociado a esta sesión ya no es válido o está inactivo.');
+    }
+
+    // Validación extra de seguridad: Si la compañía está inactiva, bloqueamos el acceso
+    if (user.company && !user.company.is_active) {
+        throw new ApiError(httpStatus.FORBIDDEN, 'La compañía asociada a esta cuenta está suspendida.');
     }
 
     req.user = user.toJSON();

@@ -1,13 +1,17 @@
-// src/models/monthlyBalance.model.js
+// src/models/initialBalance.model.js
 
 import { DataTypes } from 'sequelize';
 import sequelize from '../config/db.js';
 
-const MonthlyBalance = sequelize.define('MonthlyBalance', {
+const InitialBalance = sequelize.define('InitialBalance', {
     balance_id: {
         type: DataTypes.INTEGER,
         primaryKey: true,
         autoIncrement: true,
+    },
+    company_id: {
+        type: DataTypes.INTEGER,
+        allowNull: false,
     },
     month: {
         type: DataTypes.INTEGER,
@@ -20,22 +24,26 @@ const MonthlyBalance = sequelize.define('MonthlyBalance', {
     year: {
         type: DataTypes.INTEGER,
         allowNull: false,
+        validate: {
+            min: 2020, // Validación de año mínimo razonable
+        },
     },
     initial_balance: {
-        type: DataTypes.DECIMAL(12, 2), // Mapea a DECIMAL(12, 2)
+        type: DataTypes.DECIMAL(12, 2),
         allowNull: false,
     },
 }, {
-    tableName: 'monthly_balance',
+    tableName: 'initial_balance',
     timestamps: true,
     createdAt: 'created_at',
     updatedAt: 'updated_at',
     indexes: [
         {
             unique: true,
-            fields: ['month', 'year'],
+            fields: ['company_id', 'month', 'year'],
+            name: 'uniq_initial_balance_per_company_month_year',
         },
     ],
 });
 
-export default MonthlyBalance;
+export default InitialBalance;
