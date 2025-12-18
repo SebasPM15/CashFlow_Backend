@@ -1,5 +1,3 @@
-// src/services/reports.service.js
-
 import httpStatus from 'http-status';
 import { Op } from 'sequelize';
 import {
@@ -29,81 +27,55 @@ import logger from '../utils/logger.js';
 // ===================================
 
 /**
- * Calcula el rango de fechas (startDate, endDate) basado en el período y la fecha de referencia.
+ * Calcula el rango de fechas (startDate, endDate).
  * @private
- * @param {string} periodType - 'daily', 'weekly', 'monthly', 'quarterly', 'semiannual', 'annual'
- * @param {string} date - Fecha ISO de referencia (ej: '2025-10-20T10:00:00.000Z')
- * @returns {{startDate: Date, endDate: Date}}
  */
 const _calculateDateRange = (periodType, date) => {
     const parsedDate = parseISO(date);
     const year = parsedDate.getFullYear();
-
-    // Nota: La semana en Ecuador (y en ISO 8601) empieza el Lunes (1).
     const weekOptions = { weekStartsOn: 1 };
 
     switch (periodType) {
-        case 'daily':
-            return {
-                startDate: startOfDay(parsedDate),
-                endDate: endOfDay(parsedDate),
-            };
-        case 'weekly':
-            return {
-                startDate: startOfWeek(parsedDate, weekOptions),
-                endDate: endOfWeek(parsedDate, weekOptions),
-            };
-        case 'monthly':
-            return {
-                startDate: startOfMonth(parsedDate),
-                endDate: endOfMonth(parsedDate),
-            };
-        case 'quarterly':
-            return {
-                startDate: startOfQuarter(parsedDate),
-                endDate: endOfQuarter(parsedDate),
-            };
+        case 'daily': return { startDate: startOfDay(parsedDate), endDate: endOfDay(parsedDate) };
+        case 'weekly': return { startDate: startOfWeek(parsedDate, weekOptions), endDate: endOfWeek(parsedDate, weekOptions) };
+        case 'monthly': return { startDate: startOfMonth(parsedDate), endDate: endOfMonth(parsedDate) };
+        case 'quarterly': return { startDate: startOfQuarter(parsedDate), endDate: endOfQuarter(parsedDate) };
         case 'semiannual':
-            // date-fns no tiene 'startOfSemiannual', lo calculamos manual
-            const isFirstHalf = parsedDate.getMonth() < 6; // Meses 0-5 (Ene-Jun)
+            const isFirstHalf = parsedDate.getMonth() < 6;
             return {
-                startDate: isFirstHalf ? startOfDay(new Date(year, 0, 1)) : startOfDay(new Date(year, 6, 1)), // 1 Ene o 1 Jul
-                endDate: isFirstHalf ? endOfDay(new Date(year, 5, 30)) : endOfDay(new Date(year, 11, 31)), // 30 Jun o 31 Dic
+                startDate: isFirstHalf ? startOfDay(new Date(year, 0, 1)) : startOfDay(new Date(year, 6, 1)),
+                endDate: isFirstHalf ? endOfDay(new Date(year, 5, 30)) : endOfDay(new Date(year, 11, 31)),
             };
-        case 'annual':
-            return {
-                startDate: startOfYear(parsedDate),
-                endDate: endOfYear(parsedDate),
-            };
-        default:
-            // Esto no debería pasar si la validación de Joi funciona
-            throw new ApiError(httpStatus.INTERNAL_SERVER_ERROR, 'Tipo de período no implementado.');
+        case 'annual': return { startDate: startOfYear(parsedDate), endDate: endOfYear(parsedDate) };
+        default: throw new ApiError(httpStatus.INTERNAL_SERVER_ERROR, 'Tipo de período no implementado.');
     }
 };
 
 /**
  * Construye la cláusula 'where' común para todas las consultas de reporte.
+ * CRÍTICO: Asegura el aislamiento por compañía.
  * @private
  */
 const _buildCommonWhereClause = (filters, user, dateRange) => {
     const { userId, subcategoryId, methodId } = filters;
+    
+    // 🔥 CORRECCIÓN DE SEGURIDAD: Filtro obligatorio por company_id
     const whereClause = {
-        status: 'ACTIVE', // Los reportes SOLO deben incluir transacciones activas
+        company_id: user.company.company_id, // <--- AQUÍ ESTABA EL HUECO, YA CERRADO
+        status: 'ACTIVE',
         transaction_date: {
             [Op.between]: [dateRange.startDate, dateRange.endDate],
         },
     };
 
-    // 1. Filtro por Rol/Usuario
+    // 1. Filtro por Rol/Usuario (dentro de la misma compañía)
     if (user.role.role_name === 'employee') {
-        // Empleado solo ve sus transacciones
         whereClause.user_id = user.user_id;
     } else if (user.role.role_name === 'admin' && userId) {
-        // Admin puede filtrar por un usuario específico
         whereClause.user_id = userId;
     }
 
-    // 2. Filtros opcionales directos
+    // 2. Filtros opcionales
     if (subcategoryId) whereClause.subcategory_id = subcategoryId;
     if (methodId) whereClause.method_id = methodId;
 
@@ -118,27 +90,24 @@ const _buildCommonIncludeClause = (filters) => {
     const { categoryId } = filters;
     const includeClause = [];
 
-    // 3. Filtro por Categoría (requiere un include)
     const subcategoryInclude = {
         model: db.Subcategory,
         as: 'subcategory',
-        attributes: [], // No necesitamos los atributos, solo el filtro
+        attributes: [],
+        required: !!categoryId // Si hay filtro de categoría, el inner join es requerido
     };
 
     if (categoryId) {
         subcategoryInclude.where = { category_id: categoryId };
     }
 
-    // Siempre incluimos Subcategory para que el 'where' opcional funcione
     includeClause.push(subcategoryInclude);
-
     return includeClause;
 };
 
 /**
- * Ejecuta una consulta de agregación (SUM) con los filtros dados.
+ * Ejecuta una consulta de agregación (SUM).
  * @private
- * @returns {Promise<{totalDebit: number, totalCredit: number, netFlow: number, count: number}>}
  */
 const _getAggregatedTotals = async (whereClause, includeClause) => {
     const result = await db.CashFlowTransaction.findOne({
@@ -149,7 +118,7 @@ const _getAggregatedTotals = async (whereClause, includeClause) => {
         ],
         where: whereClause,
         include: includeClause,
-        raw: true, // Devuelve un objeto JSON plano, no una instancia de Sequelize
+        raw: true,
     });
 
     const totalDebit = parseFloat(result.totalDebit) || 0;
@@ -166,24 +135,18 @@ const _getAggregatedTotals = async (whereClause, includeClause) => {
 // ===================================
 
 /**
- * Genera un reporte periódico (diario, semanal, etc.) con totales GLOBALES.
- * @param {object} reportData - Datos validados por Joi
- * @param {object} user - Objeto de usuario autenticado
+ * Genera un reporte periódico global.
  */
 const getPeriodicReport = async (reportData, user) => {
     const { periodType, date, ...filters } = reportData;
-
-    // 1. Calcular el rango de fechas
     const dateRange = _calculateDateRange(periodType, date);
-
-    // 2. Construir filtros
-    const whereClause = _buildCommonWhereClause(filters, user, dateRange);
+    
+    // Ahora incluye company_id implícitamente
+    const whereClause = _buildCommonWhereClause(filters, user, dateRange); 
     const includeClause = _buildCommonIncludeClause(filters);
 
-    // 3. Obtener totales agregados
     const totals = await _getAggregatedTotals(whereClause, includeClause);
 
-    // 4. Devolver respuesta estandarizada
     return {
         reportMetadata: {
             reportName: 'Reporte Periódico Global',
@@ -198,65 +161,52 @@ const getPeriodicReport = async (reportData, user) => {
 };
 
 /**
- * Genera un reporte desglosado por Categoría y Subcategoría.
- * @param {object} reportData - Datos validados por Joi
- * @param {object} user - Objeto de usuario autenticado
+ * Genera un reporte desglosado por Categoría.
  */
 const getReportByCategory = async (reportData, user) => {
     const { periodType, date, ...filters } = reportData;
-
-    // 1. Calcular el rango de fechas
     const dateRange = _calculateDateRange(periodType, date);
-
-    // 2. Construir filtros
-    // Para este reporte, ignoramos los filtros categoryId y subcategoryId
-    // que vengan en 'filters', ya que el propósito es agrupar por ellas.
     const { categoryId, subcategoryId, ...otherFilters } = filters;
 
+    // Ahora incluye company_id implícitamente
     const whereClause = _buildCommonWhereClause(otherFilters, user, dateRange);
 
-    // 3. Ejecutar la consulta de agregación CON GRUPO
     const results = await db.CashFlowTransaction.findAll({
         attributes: [
-            // Obtenemos los nombres de las tablas asociadas
             [db.sequelize.col('subcategory.category.category_name'), 'categoryName'],
             [db.sequelize.col('subcategory.subcategory_name'), 'subcategoryName'],
-            // Calculamos las sumas
             [db.sequelize.fn('SUM', db.sequelize.col('debit')), 'totalDebit'],
             [db.sequelize.fn('SUM', db.sequelize.col('credit')), 'totalCredit'],
             [db.sequelize.fn('COUNT', db.sequelize.col('transaction_id')), 'count'],
         ],
         where: whereClause,
         include: [
-            // Incluimos las asociaciones para poder agrupar por sus nombres
             {
                 model: db.Subcategory,
                 as: 'subcategory',
-                attributes: [], // No necesitamos los atributos de subcategoría en el SELECT
-                required: true, // Asegura que solo traiga transacciones con subcategoría
+                attributes: [],
+                required: true,
                 include: {
                     model: db.Category,
                     as: 'category',
-                    attributes: [], // No necesitamos los atributos de categoría en el SELECT
-                    required: true, // Asegura que solo traiga subcategorías con categoría
+                    attributes: [],
+                    required: true,
                 },
             },
-            // Incluimos las otras tablas asociadas si es necesario para filtros (ej. User)
-            // (En este caso, _buildCommonWhereClause ya maneja el filtro de user_id directamente)
         ],
-        // Agrupamos por los nombres
         group: [
-            'subcategory.category.category_id', // Agrupar por IDs es más performante
+            'subcategory.category.category_id',
+            'subcategory.category.category_name', // Postgres pide agrupar por lo que seleccionas o IDs
             'subcategory.subcategory_id',
+            'subcategory.subcategory_name'
         ],
         order: [
             [db.sequelize.col('categoryName'), 'ASC'],
             [db.sequelize.col('subcategoryName'), 'ASC'],
         ],
-        raw: true, // Devuelve JSON plano
+        raw: true,
     });
 
-    // 4. Procesar y formatear los resultados
     const formattedResults = results.map(row => ({
         categoryName: row.categoryName,
         subcategoryName: row.subcategoryName,
@@ -266,7 +216,6 @@ const getReportByCategory = async (reportData, user) => {
         count: parseInt(row.count, 10) || 0,
     }));
 
-    // 5. Devolver respuesta
     return {
         reportMetadata: {
             reportName: 'Reporte por Categoría y Subcategoría',
@@ -274,22 +223,18 @@ const getReportByCategory = async (reportData, user) => {
             startDate: dateRange.startDate.toISOString(),
             endDate: dateRange.endDate.toISOString(),
             generatedAt: new Date().toISOString(),
-            filtersApplied: otherFilters, // Mostramos los filtros que sí se aplicaron
+            filtersApplied: otherFilters,
         },
         breakdown: formattedResults,
     };
 };
 
-
 /**
- * Genera un reporte específico de "Gastos de Venta".
- * @param {object} reportData - Datos validados por Joi (incluye período y filtros)
- * @param {object} user - Objeto de usuario autenticado
+ * Genera reporte de Gastos de Venta.
  */
 const getSalesExpenseReport = async (reportData, user) => {
     const { periodType, date, ...filters } = reportData;
 
-    // 1. Buscar la subcategoría "Pago de Gastos de Venta"
     const salesSubcategory = await db.Subcategory.findOne({
         where: { subcategory_name: 'Pago de Gastos de Venta' },
         attributes: ['subcategory_id'],
@@ -297,20 +242,17 @@ const getSalesExpenseReport = async (reportData, user) => {
     });
 
     if (!salesSubcategory) {
-        logger.warn('No se encontró la subcategoría "Pago de Gastos de Venta" para el reporte.');
-        throw new ApiError(httpStatus.NOT_FOUND, 'Subcategoría "Pago de Gastos de Venta" no configurada.');
+        logger.warn('No se encontró la subcategoría "Pago de Gastos de Venta".');
+        throw new ApiError(httpStatus.NOT_FOUND, 'Subcategoría no configurada.');
     }
 
-    // 2. Calcular rango de fechas
     const dateRange = _calculateDateRange(periodType, date);
-
-    // 3. Construir filtros (forzando la subcategoría)
-    // Se ignorará cualquier 'subcategoryId' que venga en 'filters'
     filters.subcategoryId = salesSubcategory.subcategory_id;
+    
+    // Ahora incluye company_id implícitamente
     const whereClause = _buildCommonWhereClause(filters, user, dateRange);
     const includeClause = _buildCommonIncludeClause(filters);
 
-    // 4. Obtener totales
     const totals = await _getAggregatedTotals(whereClause, includeClause);
 
     return {
@@ -320,34 +262,27 @@ const getSalesExpenseReport = async (reportData, user) => {
             startDate: dateRange.startDate.toISOString(),
             endDate: dateRange.endDate.toISOString(),
             generatedAt: new Date().toISOString(),
-            filtersApplied: filters, // Mostrará que el filtro de subcategoría fue aplicado
+            filtersApplied: filters,
         },
         summary: totals,
     };
 };
 
 /**
- * Genera un reporte de "Validación de Cuadre".
- * Compara el Total de Créditos vs. la Suma de subcategorías de Ingreso.
- * @param {object} reportData - Datos validados por Joi (incluye período y filtros)
- * @param {object} user - Objeto de usuario autenticado
+ * Reporte de Validación de Cuadre.
  */
 const getBalanceValidationReport = async (reportData, user) => {
     const { periodType, date, ...filters } = reportData;
-
-    // 1. Calcular rango de fechas
     const dateRange = _calculateDateRange(periodType, date);
 
-    // 2. Construir filtros base
+    // Filtros base con company_id seguro
     const baseWhereClause = _buildCommonWhereClause(filters, user, dateRange);
     const baseIncludeClause = _buildCommonIncludeClause(filters);
 
-    // --- CONSULTA 1: Obtener el Total de Créditos (Total general de la columna 'credit') ---
+    // Consulta 1: Total Créditos
     const { totalCredit } = await _getAggregatedTotals(baseWhereClause, baseIncludeClause);
 
-    // --- CONSULTA 2: Obtener la suma solo de las subcategorías de INGRESO ('CREDIT') ---
-
-    // 2.a. Encontrar todas las subcategorías tipo CREDIT
+    // Consulta 2: Total Ingresos (Solo subcategorías CREDIT)
     const incomeSubcategories = await db.Subcategory.findAll({
         where: { transaction_type: 'CREDIT' },
         attributes: ['subcategory_id'],
@@ -355,49 +290,41 @@ const getBalanceValidationReport = async (reportData, user) => {
     });
     const incomeSubcategoryIds = incomeSubcategories.map(s => s.subcategory_id);
 
-    // 2.b. Crear un 'where' clause específico para estas subcategorías
     const incomeWhereClause = {
         ...baseWhereClause,
         subcategory_id: { [Op.in]: incomeSubcategoryIds },
     };
 
-    // 2.c. Obtener la suma de créditos SÓLO de esas subcategorías
     const { totalCredit: totalIncomeSum } = await _getAggregatedTotals(incomeWhereClause, baseIncludeClause);
-
-    // 3. Comparar y devolver
-    const difference = totalCredit - totalIncomeSum;
-    const isValid = difference === 0;
 
     return {
         reportMetadata: {
             reportName: 'Reporte de Validación de Cuadre',
             periodType,
-            startDate: dateRange.startDate.toISOString(),
-            endDate: dateRange.endDate.toISOString(),
             generatedAt: new Date().toISOString(),
-            filtersApplied: filters,
         },
         validation: {
-            totalCreditColumn: totalCredit, // Suma total de la columna 'credit'
-            totalIncomeSubcategories: totalIncomeSum, // Suma de transacciones en subcategorías 'CREDIT'
-            difference,
-            isValid,
+            totalCreditColumn: totalCredit,
+            totalIncomeSubcategories: totalIncomeSum,
+            difference: totalCredit - totalIncomeSum,
+            isValid: (totalCredit - totalIncomeSum) === 0,
         },
     };
 };
 
+
 /**
- * Genera el Análisis Financiero Anual.
- * Soporta continuidad histórica entre años.
+ * Genera el Análisis Financiero Anual (Flujo de Fondos tipo Excel).
+ * Soporta continuidad histórica, reinicios manuales y cálculo de resumen anual.
  */
 const getFinancialAnalysis = async (companyId, year) => {
     const startDate = new Date(`${year}-01-01T00:00:00.000Z`);
     const endDate = new Date(`${year}-12-31T23:59:59.999Z`);
 
-    // 1. Obtener transacciones del año solicitado
+    // 1. Obtener transacciones (Filtradas por Company)
     const transactions = await db.CashFlowTransaction.findAll({
         where: {
-            company_id: companyId,
+            company_id: companyId, // <--- SEGURO
             status: 'ACTIVE',
             transaction_date: { [Op.between]: [startDate, endDate] }
         },
@@ -415,9 +342,9 @@ const getFinancialAnalysis = async (companyId, year) => {
         order: [['transaction_date', 'ASC']]
     });
 
-    // 2. Obtener saldos iniciales manuales del año
+    // 2. Obtener saldos iniciales (Filtrados por Company)
     const initialBalances = await db.InitialBalance.findAll({
-        where: { company_id: companyId, year: year },
+        where: { company_id: companyId, year: year }, // <--- SEGURO
         raw: true
     });
 
@@ -426,22 +353,19 @@ const getFinancialAnalysis = async (companyId, year) => {
         balancesMap[b.month] = parseFloat(b.initial_balance);
     });
 
-    // 3. --- LÓGICA DE CONTINUIDAD HISTÓRICA (MEJORADA) ---
+    // 3. Continuidad Histórica
     let currentBalance = 0.00;
 
-    // Caso A: ¿El admin configuró manualmente el inicio de Enero?
     if (balancesMap[1] !== undefined) {
         currentBalance = balancesMap[1];
-    } 
-    // Caso B: Si no, buscamos el saldo final histórico (arrastre del año anterior)
-    else {
+    } else {
         const lastTxPreviousYear = await db.CashFlowTransaction.findOne({
             where: {
-                company_id: companyId,
+                company_id: companyId, // <--- SEGURO
                 status: 'ACTIVE',
-                transaction_date: { [Op.lt]: startDate } // Buscar todo lo anterior al 1 de Enero
+                transaction_date: { [Op.lt]: startDate }
             },
-            order: [['transaction_date', 'DESC'], ['created_at', 'DESC']], // La última absoluta
+            order: [['transaction_date', 'DESC'], ['created_at', 'DESC']],
             attributes: ['resulting_balance']
         });
 
@@ -449,8 +373,8 @@ const getFinancialAnalysis = async (companyId, year) => {
             currentBalance = parseFloat(lastTxPreviousYear.resulting_balance);
         }
     }
-    // -----------------------------------------------------
 
+    // 4. Iteración Mensual
     const monthlyData = [];
     const monthNames = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"];
 
@@ -461,18 +385,15 @@ const getFinancialAnalysis = async (companyId, year) => {
         INTERNAL: 'Movimientos Financiamiento Interno'
     };
 
-    // 4. Iterar por cada mes
     for (let i = 0; i < 12; i++) {
         const currentMonthNum = i + 1;
 
-        // Verificar reinicio manual de saldo en este mes específico
         if (balancesMap[currentMonthNum] !== undefined) {
             currentBalance = balancesMap[currentMonthNum];
         }
 
         const txsInMonth = transactions.filter(tx => {
             const d = new Date(tx.transaction_date);
-            // Usamos getUTCMonth para consistencia con ISO dates
             return d.getUTCMonth() === i;
         });
 
@@ -521,9 +442,22 @@ const getFinancialAnalysis = async (companyId, year) => {
         currentBalance = finalBalance;
     }
 
+    // 5. NUEVO: Cálculo de Resumen Anual
+    let sumOfMonthlyBalances = 0;
+    monthlyData.forEach(m => {
+        sumOfMonthlyBalances += m.saldoFinal;
+    });
+
+    const averageAnnualBalance = sumOfMonthlyBalances / 12;
+
     return {
         year,
         companyId,
+        // Agregamos el resumen aquí para dashboards o KPIs
+        annualSummary: {
+            averageBalance: parseFloat(averageAnnualBalance.toFixed(2)),
+            closingBalance: monthlyData[11].saldoFinal // Saldo final de Diciembre
+        },
         reportData: monthlyData
     };
 };
@@ -533,5 +467,5 @@ export default {
     getReportByCategory,
     getSalesExpenseReport,
     getBalanceValidationReport,
-    getFinancialAnalysis
+    getFinancialAnalysis,
 };

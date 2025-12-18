@@ -14,6 +14,9 @@ import InitialBalance from './initialBalance.model.js';
 import CashFlowTransaction from './cashFlowTransaction.model.js';
 import Evidence from './evidence.model.js';
 import PaymentMethod from './paymentMethod.model.js';
+import Bank from './bank.model.js';
+import AccountType from './accountType.model.js';
+import BankAccount from './bankAccount.model.js';
 
 const db = {};
 
@@ -29,6 +32,9 @@ db.InitialBalance = InitialBalance;
 db.CashFlowTransaction = CashFlowTransaction;
 db.Evidence = Evidence;
 db.PaymentMethod = PaymentMethod;
+db.Bank = Bank;
+db.AccountType = AccountType;
+db.BankAccount = BankAccount;
 
 // ===================================
 // === DEFINICIÓN DE ASOCIACIONES ====
@@ -76,6 +82,17 @@ db.Company.hasMany(db.CashFlowTransaction, {
     onDelete: 'RESTRICT',
 });
 db.CashFlowTransaction.belongsTo(db.Company, { 
+    foreignKey: 'company_id', 
+    as: 'company',
+});
+
+// Una Compañía tiene muchas Cuentas Bancarias (Company.company_id -> BankAccount.company_id)
+db.Company.hasMany(db.BankAccount, { 
+    foreignKey: 'company_id', 
+    as: 'bankAccounts',
+    onDelete: 'RESTRICT', // No eliminar compañía con cuentas bancarias
+});
+db.BankAccount.belongsTo(db.Company, { 
     foreignKey: 'company_id', 
     as: 'company',
 });
@@ -183,6 +200,41 @@ db.CashFlowTransaction.hasMany(db.Evidence, {
 db.Evidence.belongsTo(db.CashFlowTransaction, { 
     foreignKey: 'transaction_id', 
     as: 'transaction',
+});
+
+// --- 5. ASOCIACIONES DE CUENTAS BANCARIAS ---
+
+// Un Banco tiene muchas Cuentas Bancarias (Bank.bank_id -> BankAccount.bank_id)
+db.Bank.hasMany(db.BankAccount, {
+    foreignKey: 'bank_id',
+    as: 'bankAccounts',
+    onDelete: 'RESTRICT', // No eliminar banco con cuentas asociadas
+});
+db.BankAccount.belongsTo(db.Bank, {
+    foreignKey: 'bank_id',
+    as: 'bank',
+});
+
+// Un Tipo de Cuenta tiene muchas Cuentas Bancarias (AccountType.account_type_id -> BankAccount.account_type_id)
+db.AccountType.hasMany(db.BankAccount, {
+    foreignKey: 'account_type_id',
+    as: 'bankAccounts',
+    onDelete: 'RESTRICT', // No eliminar tipo de cuenta con cuentas asociadas
+});
+db.BankAccount.belongsTo(db.AccountType, {
+    foreignKey: 'account_type_id',
+    as: 'accountType',
+});
+
+// Una Cuenta Bancaria está en muchas Transacciones (BankAccount.account_id -> CashFlowTransaction.bank_account_id)
+db.BankAccount.hasMany(db.CashFlowTransaction, {
+    foreignKey: 'bank_account_id',
+    as: 'transactions',
+    onDelete: 'RESTRICT', // No eliminar cuenta con transacciones asociadas
+});
+db.CashFlowTransaction.belongsTo(db.BankAccount, {
+    foreignKey: 'bank_account_id',
+    as: 'bankAccount',
 });
 
 // ===================================

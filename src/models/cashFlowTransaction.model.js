@@ -9,6 +9,10 @@ const CashFlowTransaction = sequelize.define('CashFlowTransaction', {
         primaryKey: true,
         autoIncrement: true,
     },
+    bank_account_id: {
+        type: DataTypes.INTEGER,
+        allowNull: true, // NULL por ahora para compatibilidad
+    },
     company_id: {
         type: DataTypes.INTEGER,
         allowNull: false,
