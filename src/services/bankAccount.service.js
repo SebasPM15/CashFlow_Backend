@@ -74,9 +74,8 @@ const listBankAccounts = async (user) => {
             company_id: user.company.company_id,
             is_active: true
         },
-        attributes: canViewFullNumbers
-            ? ['account_id', 'account_alias', 'account_number', 'masked_account_number', 'is_default']
-            : ['account_id', 'account_alias', 'masked_account_number', 'is_default'],
+        // ✅ SIEMPRE incluir account_number para que el getter virtual funcione
+        attributes: ['account_id', 'account_alias', 'account_number', 'is_default'],
         include: [
             {
                 model: db.Bank,
@@ -92,12 +91,16 @@ const listBankAccounts = async (user) => {
         order: [['is_default', 'DESC'], ['account_alias', 'ASC']]
     });
     
-    // Post-procesamiento para employees
+    // Post-procesamiento: aplicar enmascaramiento y eliminar número completo para employees
     return accounts.map(acc => {
         const accJson = acc.toJSON();
         
+        // ✅ El getter virtual ahora funciona porque account_number está disponible
+        accJson.masked_account_number = acc.masked_account_number;
+        
+        // ✅ Para employees, eliminar el número completo
         if (!canViewFullNumbers) {
-            delete accJson.account_number; // Removemos el número completo
+            delete accJson.account_number;
         }
         
         return accJson;
