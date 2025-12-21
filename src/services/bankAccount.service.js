@@ -1,6 +1,7 @@
 import httpStatus from 'http-status';
 import db from '../models/index.js';
 import { ApiError } from '../utils/ApiError.js';
+import { canViewFullAccountNumbers } from '../utils/masking.util.js';
 
 /**
  * Obtiene los catálogos (Bancos y Tipos) para llenar los selects del frontend.
@@ -65,22 +66,41 @@ const createBankAccount = async (data, companyId) => {
 /**
  * Lista las cuentas bancarias de la compañía.
  */
-const listBankAccounts = async (companyId) => {
-    return await db.BankAccount.findAll({
-        where: { company_id: companyId, is_active: true },
+const listBankAccounts = async (user) => {
+    const canViewFullNumbers = canViewFullAccountNumbers(user);
+    
+    const accounts = await db.BankAccount.findAll({
+        where: {
+            company_id: user.company.company_id,
+            is_active: true
+        },
+        attributes: canViewFullNumbers
+            ? ['account_id', 'account_alias', 'account_number', 'masked_account_number', 'is_default']
+            : ['account_id', 'account_alias', 'masked_account_number', 'is_default'],
         include: [
-            { 
-                model: db.Bank, 
-                as: 'bank', 
-                attributes: ['bank_name', 'bank_code'] 
+            {
+                model: db.Bank,
+                as: 'bank',
+                attributes: ['bank_name', 'bank_code']
             },
-            { 
-                model: db.AccountType, 
-                as: 'accountType', 
-                attributes: ['type_name'] 
+            {
+                model: db.AccountType,
+                as: 'accountType',
+                attributes: ['type_name']
             }
         ],
-        order: [['is_default', 'DESC'], ['created_at', 'ASC']]
+        order: [['is_default', 'DESC'], ['account_alias', 'ASC']]
+    });
+    
+    // Post-procesamiento para employees
+    return accounts.map(acc => {
+        const accJson = acc.toJSON();
+        
+        if (!canViewFullNumbers) {
+            delete accJson.account_number; // Removemos el número completo
+        }
+        
+        return accJson;
     });
 };
 

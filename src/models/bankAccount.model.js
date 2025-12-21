@@ -42,6 +42,26 @@ const BankAccount = sequelize.define('BankAccount', {
         allowNull: false,
         defaultValue: false,
     },
+    // VIRTUAL GETTER: Número enmascarado
+    masked_account_number: {
+        type: DataTypes.VIRTUAL,
+        get() {
+            const fullNumber = this.getDataValue('account_number');
+            if (!fullNumber) return '';
+
+            const numStr = fullNumber.toString();
+            const visibleDigits = 4;
+
+            if (numStr.length <= visibleDigits) {
+                return 'x'.repeat(numStr.length);
+            }
+
+            const lastDigits = numStr.slice(-visibleDigits);
+            const maskedPart = 'x'.repeat(numStr.length - visibleDigits);
+
+            return maskedPart + lastDigits;
+        }
+    },
 }, {
     tableName: 'bank_accounts',
     timestamps: true,

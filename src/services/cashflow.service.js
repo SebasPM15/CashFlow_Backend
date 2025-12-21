@@ -8,6 +8,7 @@ import emailService from './email/email.service.js';
 import logger from '../utils/logger.js';
 import { storageService } from './storage.service.js';
 import { notificationService } from './notification.service.js';
+import { maskAccountNumber, canViewFullAccountNumbers } from '../utils/masking.util.js';
 
 /**
  * Servicio para gestionar la lógica de negocio del flujo de caja.
@@ -137,7 +138,7 @@ const setInitialMonthlyBalance = async (balanceData, companyId) => {
  */
 const createTransaction = async (transactionData, userId, companyId) => {
     const { subcategory_id, transaction_date, method_id, concept, amount, evidence, bank_account_id } = transactionData;
-    
+
     let subcategory;
     let paymentMethod;
 
@@ -164,7 +165,7 @@ const createTransaction = async (transactionData, userId, companyId) => {
         // 4. Validar Cuenta Bancaria
         const methodName = paymentMethod.method_name.toLowerCase();
         let accountIdToSave = bank_account_id;
-        
+
         if (methodName !== 'efectivo' && !bank_account_id) {
             throw new ApiError(httpStatus.BAD_REQUEST, `Para el método '${paymentMethod.method_name}' es obligatorio seleccionar una cuenta bancaria.`);
         }
@@ -183,7 +184,7 @@ const createTransaction = async (transactionData, userId, companyId) => {
         // 5. Resolver Saldo Inicial
         const date = new Date(transaction_date);
         const resolvedBalance = await _resolveInitialBalance(companyId, date.getFullYear(), date.getMonth() + 1, t);
-        
+
         // 6. Calcular Saldo Resultante
         const lastKnownTransaction = await db.CashFlowTransaction.findOne({
             where: { company_id: companyId, status: 'ACTIVE' },
@@ -226,7 +227,7 @@ const createTransaction = async (transactionData, userId, companyId) => {
             if (!matches) throw new ApiError(httpStatus.BAD_REQUEST, 'Formato de base64 inválido.');
             const buffer = Buffer.from(matches[2], 'base64');
             const newFilePath = await storageService.uploadEvidence(buffer, evidence.file_name, userId);
-            
+
             await db.Evidence.create({
                 transaction_id: createdTransaction.transaction_id,
                 file_path: newFilePath,
@@ -246,7 +247,7 @@ const createTransaction = async (transactionData, userId, companyId) => {
         // 1. Obtener datos complementarios
         const company = await db.Company.findByPk(companyId, { attributes: ['company_name'] });
         const user = await db.User.findByPk(userId);
-        
+
         let bankDetails = null;
         if (newTransaction.bank_account_id) {
             const bankAccountInfo = await db.BankAccount.findByPk(newTransaction.bank_account_id, {
@@ -291,11 +292,11 @@ const createTransaction = async (transactionData, userId, companyId) => {
 
             if (admins.length > 0) {
                 // Usamos Promise.all para asegurar que se disparen todos los envíos
-                const emailPromises = admins.map(admin => 
+                const emailPromises = admins.map(admin =>
                     emailService.sendNewTransactionNotification(admin.email, details)
                         .catch(err => logger.error(`Fallo envío email a ${admin.email}: ${err.message}`))
                 );
-                
+
                 await Promise.all(emailPromises); // Esperamos a que el servidor de correo acepte las peticiones
             } else {
                 logger.warn(`No hay administradores con rol 'admin' en la compañía ${companyId} para enviar correos.`);
@@ -314,7 +315,7 @@ const createTransaction = async (transactionData, userId, companyId) => {
 
 /**
  * Obtiene una lista paginada de transacciones de una compañía.
- * NUEVO: Incluye información de la cuenta bancaria.
+ * ACTUALIZADO: Enmascara números de cuenta según el rol del usuario.
  */
 const getTransactionsList = async (user, queryParams) => {
     const {
@@ -329,10 +330,11 @@ const getTransactionsList = async (user, queryParams) => {
     } = queryParams;
 
     const offset = (page - 1) * limit;
+    const canViewFullNumbers = canViewFullAccountNumbers(user);
 
     // --- CONSTRUCCIÓN DE WHERE CLAUSE ---
     const whereClause = {
-        company_id: user.company.company_id // FILTRO POR COMPAÑÍA
+        company_id: user.company.company_id
     };
 
     if (user.role.role_name === 'employee') {
@@ -380,11 +382,12 @@ const getTransactionsList = async (user, queryParams) => {
             { model: db.Evidence, as: 'evidences', attributes: ['evidence_id', 'original_filename'] },
             subcategoryInclude,
             { model: db.PaymentMethod, as: 'paymentMethod', attributes: ['method_name'] },
-            // NUEVO: Incluir información de la Cuenta Bancaria
             {
                 model: db.BankAccount,
                 as: 'bankAccount',
-                attributes: ['account_alias', 'account_number'],
+                attributes: canViewFullNumbers
+                    ? ['account_alias', 'account_number', 'masked_account_number'] // Admin ve todo
+                    : ['account_alias', 'masked_account_number'], // Employee solo ve enmascarado
                 include: [
                     { model: db.Bank, as: 'bank', attributes: ['bank_name', 'bank_code'] }
                 ]
@@ -396,11 +399,28 @@ const getTransactionsList = async (user, queryParams) => {
         distinct: true,
     });
 
+    // Post-procesamiento: Si NO es admin, eliminamos account_number del JSON
+    const sanitizedRows = rows.map(tx => {
+        const txJson = tx.toJSON();
+
+        if (!canViewFullNumbers && txJson.bankAccount) {
+            // Eliminamos el número completo si existe
+            delete txJson.bankAccount.account_number;
+
+            // Aseguramos que el número enmascarado esté presente
+            if (!txJson.bankAccount.masked_account_number && txJson.bankAccount.account_number) {
+                txJson.bankAccount.masked_account_number = maskAccountNumber(txJson.bankAccount.account_number);
+            }
+        }
+
+        return txJson;
+    });
+
     return {
         totalItems: count,
         totalPages: Math.ceil(count / limit),
         currentPage: parseInt(page, 10),
-        transactions: rows,
+        transactions: sanitizedRows,
     };
 };
 
@@ -637,12 +657,12 @@ const getMonthlyBalance = async (queryData, companyId) => {
     let finalBalance = calculatedInitialBalance;
     let sumOfBalances = 0; // Para el promedio
     // Si no hay transacciones, el promedio es el saldo inicial constante
-    let accumulatedBalanceForAvg = calculatedInitialBalance * (transactionsOfMonth.length + 1); 
+    let accumulatedBalanceForAvg = calculatedInitialBalance * (transactionsOfMonth.length + 1);
 
     if (transactionsOfMonth.length > 0) {
         // Opción A: Usar el resulting_balance de la última (más preciso si la data es consistente)
         finalBalance = parseFloat(transactionsOfMonth[transactionsOfMonth.length - 1].resulting_balance);
-        
+
         // Opción B (Cálculo manual para promedio):
         let currentRunBalance = calculatedInitialBalance;
         sumOfBalances = currentRunBalance; // Saldo día 0
@@ -652,7 +672,7 @@ const getMonthlyBalance = async (queryData, companyId) => {
             currentRunBalance += flow;
             sumOfBalances += currentRunBalance;
         });
-        
+
         accumulatedBalanceForAvg = sumOfBalances;
     }
 
@@ -716,7 +736,7 @@ const updateTransactionSubcategory = async (transactionId, newSubcategoryId, use
         // =================================================================
         // 5. RECÁLCULO DE SALDOS (CRÍTICO: ORDEN CRONOLÓGICO)
         // =================================================================
-        
+
         // A. Encontrar el saldo base justo antes de esta transacción
         // Buscamos la transacción inmediatamente anterior por FECHA, no por ID ni created_at solo.
         const lastTxBefore = await db.CashFlowTransaction.findOne({
@@ -725,8 +745,8 @@ const updateTransactionSubcategory = async (transactionId, newSubcategoryId, use
                 status: 'ACTIVE',
                 [Op.or]: [
                     { transaction_date: { [Op.lt]: transaction.transaction_date } },
-                    { 
-                        transaction_date: transaction.transaction_date, 
+                    {
+                        transaction_date: transaction.transaction_date,
                         created_at: { [Op.lt]: transaction.created_at } // Desempate para mismo día
                     }
                 ]
@@ -758,8 +778,8 @@ const updateTransactionSubcategory = async (transactionId, newSubcategoryId, use
                 status: 'ACTIVE',
                 [Op.or]: [
                     { transaction_date: { [Op.gt]: transaction.transaction_date } },
-                    { 
-                        transaction_date: transaction.transaction_date, 
+                    {
+                        transaction_date: transaction.transaction_date,
                         created_at: { [Op.gte]: transaction.created_at } // Incluye la actual
                     }
                 ]
@@ -772,7 +792,7 @@ const updateTransactionSubcategory = async (transactionId, newSubcategoryId, use
         for (const tx of subsequentTransactions) {
             const debit = parseFloat(tx.debit);
             const credit = parseFloat(tx.credit);
-            
+
             // Recálculo
             const newBalance = currentBalance + credit - debit;
 

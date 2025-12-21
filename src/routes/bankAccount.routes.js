@@ -33,7 +33,7 @@ router.post(
     tramaValidator,
     secureEndpoint,
     checkStatefulSession,
-    bankAccountController.listAccounts
+    bankAccountController.listBankAccounts
 );
 
 export default router;
