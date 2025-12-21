@@ -25,14 +25,20 @@ const createAccount = asyncHandler(async (req, res) => {
 /**
  * Lista las cuentas bancarias de la empresa.
  */
-const listAccounts = asyncHandler(async (req, res) => {
-    const companyId = req.user.company.company_id;
-    const accounts = await bankAccountService.listBankAccounts(companyId);
-    sendResponse(res, httpStatus.OK, 'Cuentas bancarias listadas exitosamente.', accounts);
+const listBankAccounts = asyncHandler(async (req, res) => {
+    const user = req.user;
+    const accounts = await bankAccountService.listBankAccounts(user);
+    
+    sendResponse(
+        res,
+        httpStatus.OK,
+        'Cuentas bancarias obtenidas exitosamente.',
+        accounts
+    );
 });
 
 export const bankAccountController = {
     getCatalogs,
     createAccount,
-    listAccounts
+    listBankAccounts
 };

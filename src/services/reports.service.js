@@ -59,23 +59,20 @@ const _calculateDateRange = (periodType, date) => {
 const _buildCommonWhereClause = (filters, user, dateRange) => {
     const { userId, subcategoryId, methodId } = filters;
     
-    // 🔥 CORRECCIÓN DE SEGURIDAD: Filtro obligatorio por company_id
     const whereClause = {
-        company_id: user.company.company_id, // <--- AQUÍ ESTABA EL HUECO, YA CERRADO
+        company_id: user.company.company_id,
         status: 'ACTIVE',
         transaction_date: {
             [Op.between]: [dateRange.startDate, dateRange.endDate],
         },
     };
 
-    // 1. Filtro por Rol/Usuario (dentro de la misma compañía)
     if (user.role.role_name === 'employee') {
         whereClause.user_id = user.user_id;
     } else if (user.role.role_name === 'admin' && userId) {
         whereClause.user_id = userId;
     }
 
-    // 2. Filtros opcionales
     if (subcategoryId) whereClause.subcategory_id = subcategoryId;
     if (methodId) whereClause.method_id = methodId;
 
@@ -94,7 +91,7 @@ const _buildCommonIncludeClause = (filters) => {
         model: db.Subcategory,
         as: 'subcategory',
         attributes: [],
-        required: !!categoryId // Si hay filtro de categoría, el inner join es requerido
+        required: !!categoryId
     };
 
     if (categoryId) {
@@ -141,7 +138,6 @@ const getPeriodicReport = async (reportData, user) => {
     const { periodType, date, ...filters } = reportData;
     const dateRange = _calculateDateRange(periodType, date);
     
-    // Ahora incluye company_id implícitamente
     const whereClause = _buildCommonWhereClause(filters, user, dateRange); 
     const includeClause = _buildCommonIncludeClause(filters);
 
@@ -168,7 +164,6 @@ const getReportByCategory = async (reportData, user) => {
     const dateRange = _calculateDateRange(periodType, date);
     const { categoryId, subcategoryId, ...otherFilters } = filters;
 
-    // Ahora incluye company_id implícitamente
     const whereClause = _buildCommonWhereClause(otherFilters, user, dateRange);
 
     const results = await db.CashFlowTransaction.findAll({
@@ -196,7 +191,7 @@ const getReportByCategory = async (reportData, user) => {
         ],
         group: [
             'subcategory.category.category_id',
-            'subcategory.category.category_name', // Postgres pide agrupar por lo que seleccionas o IDs
+            'subcategory.category.category_name',
             'subcategory.subcategory_id',
             'subcategory.subcategory_name'
         ],
@@ -236,20 +231,19 @@ const getSalesExpenseReport = async (reportData, user) => {
     const { periodType, date, ...filters } = reportData;
 
     const salesSubcategory = await db.Subcategory.findOne({
-        where: { subcategory_name: 'Pago de Gastos de Venta' },
+        where: { subcategory_name: 'Pago por gastos de venta' },
         attributes: ['subcategory_id'],
         raw: true,
     });
 
     if (!salesSubcategory) {
-        logger.warn('No se encontró la subcategoría "Pago de Gastos de Venta".');
+        logger.warn('No se encontró la subcategoría "Pago por gastos de venta".');
         throw new ApiError(httpStatus.NOT_FOUND, 'Subcategoría no configurada.');
     }
 
     const dateRange = _calculateDateRange(periodType, date);
     filters.subcategoryId = salesSubcategory.subcategory_id;
     
-    // Ahora incluye company_id implícitamente
     const whereClause = _buildCommonWhereClause(filters, user, dateRange);
     const includeClause = _buildCommonIncludeClause(filters);
 
@@ -275,14 +269,11 @@ const getBalanceValidationReport = async (reportData, user) => {
     const { periodType, date, ...filters } = reportData;
     const dateRange = _calculateDateRange(periodType, date);
 
-    // Filtros base con company_id seguro
     const baseWhereClause = _buildCommonWhereClause(filters, user, dateRange);
     const baseIncludeClause = _buildCommonIncludeClause(filters);
 
-    // Consulta 1: Total Créditos
     const { totalCredit } = await _getAggregatedTotals(baseWhereClause, baseIncludeClause);
 
-    // Consulta 2: Total Ingresos (Solo subcategorías CREDIT)
     const incomeSubcategories = await db.Subcategory.findAll({
         where: { transaction_type: 'CREDIT' },
         attributes: ['subcategory_id'],
@@ -315,36 +306,40 @@ const getBalanceValidationReport = async (reportData, user) => {
 
 /**
  * Genera el Análisis Financiero Anual (Flujo de Fondos tipo Excel).
- * Soporta continuidad histórica, reinicios manuales y cálculo de resumen anual.
+ * NUEVO: Genera estructura detallada por subcategoría como en el Excel.
  */
 const getFinancialAnalysis = async (companyId, year) => {
     const startDate = new Date(`${year}-01-01T00:00:00.000Z`);
     const endDate = new Date(`${year}-12-31T23:59:59.999Z`);
 
-    // 1. Obtener transacciones (Filtradas por Company)
+    // 1. Obtener todas las subcategorías en orden (según tu nueva estructura)
+    const subcategories = await db.Subcategory.findAll({
+        include: [{
+            model: db.Category,
+            as: 'category',
+            attributes: ['category_id', 'category_name']
+        }],
+        order: [
+            ['category_id', 'ASC'],
+            ['subcategory_id', 'ASC']
+        ],
+        raw: true
+    });
+
+    // 2. Obtener transacciones del año
     const transactions = await db.CashFlowTransaction.findAll({
         where: {
-            company_id: companyId, // <--- SEGURO
+            company_id: companyId,
             status: 'ACTIVE',
             transaction_date: { [Op.between]: [startDate, endDate] }
         },
-        attributes: ['transaction_date', 'debit', 'credit'],
-        include: [{
-            model: db.Subcategory,
-            as: 'subcategory',
-            attributes: ['subcategory_name'],
-            include: [{
-                model: db.Category,
-                as: 'category',
-                attributes: ['category_name']
-            }]
-        }],
+        attributes: ['transaction_date', 'debit', 'credit', 'subcategory_id'],
         order: [['transaction_date', 'ASC']]
     });
 
-    // 2. Obtener saldos iniciales (Filtrados por Company)
+    // 3. Obtener saldos iniciales
     const initialBalances = await db.InitialBalance.findAll({
-        where: { company_id: companyId, year: year }, // <--- SEGURO
+        where: { company_id: companyId, year: year },
         raw: true
     });
 
@@ -353,15 +348,15 @@ const getFinancialAnalysis = async (companyId, year) => {
         balancesMap[b.month] = parseFloat(b.initial_balance);
     });
 
-    // 3. Continuidad Histórica
-    let currentBalance = 0.00;
+    // 4. Determinar saldo inicial del año (continuidad histórica)
+    let yearStartBalance = 0.00;
 
     if (balancesMap[1] !== undefined) {
-        currentBalance = balancesMap[1];
+        yearStartBalance = balancesMap[1];
     } else {
         const lastTxPreviousYear = await db.CashFlowTransaction.findOne({
             where: {
-                company_id: companyId, // <--- SEGURO
+                company_id: companyId,
                 status: 'ACTIVE',
                 transaction_date: { [Op.lt]: startDate }
             },
@@ -370,95 +365,123 @@ const getFinancialAnalysis = async (companyId, year) => {
         });
 
         if (lastTxPreviousYear) {
-            currentBalance = parseFloat(lastTxPreviousYear.resulting_balance);
+            yearStartBalance = parseFloat(lastTxPreviousYear.resulting_balance);
         }
     }
 
-    // 4. Iteración Mensual
+    // 5. Construir estructura de datos mensual
+    const monthNames = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", 
+                        "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"];
+    
     const monthlyData = [];
-    const monthNames = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"];
+    let runningBalance = yearStartBalance;
 
-    const MACRO_CATEGORIES = {
-        OPERATIONAL: 'Movimientos Operacionales',
-        INVESTMENT: 'Movimientos de Inversión',
-        EXTERNAL: 'Movimientos Financiamiento Externo',
-        INTERNAL: 'Movimientos Financiamiento Interno'
-    };
+    for (let monthIndex = 0; monthIndex < 12; monthIndex++) {
+        const monthNum = monthIndex + 1;
 
-    for (let i = 0; i < 12; i++) {
-        const currentMonthNum = i + 1;
-
-        if (balancesMap[currentMonthNum] !== undefined) {
-            currentBalance = balancesMap[currentMonthNum];
+        // Si hay reinicio manual de saldo, lo aplicamos
+        if (balancesMap[monthNum] !== undefined) {
+            runningBalance = balancesMap[monthNum];
         }
 
-        const txsInMonth = transactions.filter(tx => {
-            const d = new Date(tx.transaction_date);
-            return d.getUTCMonth() === i;
+        const monthStartBalance = runningBalance;
+
+        // Filtrar transacciones del mes
+        const monthTransactions = transactions.filter(tx => {
+            const txDate = new Date(tx.transaction_date);
+            return txDate.getUTCMonth() === monthIndex;
         });
 
-        const monthSummary = {
-            month: monthNames[i],
-            saldoInicial: parseFloat(currentBalance.toFixed(2)),
-            flows: { operational: 0, investment: 0, external: 0, internal: 0 },
-            details: { operational: {}, investment: {}, external: {}, internal: {} }
-        };
-
-        txsInMonth.forEach(tx => {
-            const categoryName = tx.subcategory.category.category_name;
-            const subName = tx.subcategory.subcategory_name;
-            const amount = parseFloat(tx.credit) - parseFloat(tx.debit);
-
-            if (categoryName === MACRO_CATEGORIES.OPERATIONAL) {
-                monthSummary.flows.operational += amount;
-                monthSummary.details.operational[subName] = (monthSummary.details.operational[subName] || 0) + amount;
-            } else if (categoryName === MACRO_CATEGORIES.INVESTMENT) {
-                monthSummary.flows.investment += amount;
-                monthSummary.details.investment[subName] = (monthSummary.details.investment[subName] || 0) + amount;
-            } else if (categoryName === MACRO_CATEGORIES.EXTERNAL) {
-                monthSummary.flows.external += amount;
-                monthSummary.details.external[subName] = (monthSummary.details.external[subName] || 0) + amount;
-            } else if (categoryName === MACRO_CATEGORIES.INTERNAL) {
-                monthSummary.flows.internal += amount;
-                monthSummary.details.internal[subName] = (monthSummary.details.internal[subName] || 0) + amount;
+        // Agrupar por subcategoría
+        const subcategoryTotals = {};
+        monthTransactions.forEach(tx => {
+            const subId = tx.subcategory_id;
+            if (!subcategoryTotals[subId]) {
+                subcategoryTotals[subId] = { credit: 0, debit: 0 };
             }
+            subcategoryTotals[subId].credit += parseFloat(tx.credit);
+            subcategoryTotals[subId].debit += parseFloat(tx.debit);
         });
 
-        const netFlow = monthSummary.flows.operational + monthSummary.flows.investment + monthSummary.flows.external + monthSummary.flows.internal;
-        const finalBalance = monthSummary.saldoInicial + netFlow;
+        // Construir las secciones del flujo de fondos
+        const sections = [];
+        let currentCategory = null;
+        let categoryTotal = 0;
+        let categoryRows = [];
+
+        subcategories.forEach(sub => {
+            const categoryName = sub['category.category_name'];
+            const subName = sub.subcategory_name;
+            const subId = sub.subcategory_id;
+
+            // Cambio de categoría: cerrar la anterior
+            if (currentCategory && currentCategory !== categoryName) {
+                sections.push({
+                    type: 'category',
+                    name: currentCategory,
+                    rows: categoryRows,
+                    total: parseFloat(categoryTotal.toFixed(2))
+                });
+                categoryRows = [];
+                categoryTotal = 0;
+            }
+
+            currentCategory = categoryName;
+
+            // Calcular el valor neto de esta subcategoría
+            const totals = subcategoryTotals[subId] || { credit: 0, debit: 0 };
+            const netAmount = totals.credit - totals.debit;
+            
+            categoryTotal += netAmount;
+
+            // Agregar fila
+            categoryRows.push({
+                subcategory: subName,
+                amount: parseFloat(netAmount.toFixed(2))
+            });
+        });
+
+        // Cerrar última categoría
+        if (currentCategory) {
+            sections.push({
+                type: 'category',
+                name: currentCategory,
+                rows: categoryRows,
+                total: parseFloat(categoryTotal.toFixed(2))
+            });
+        }
+
+        // Calcular flujo neto del mes
+        const totalIncome = sections.reduce((sum, sec) => sum + (sec.total > 0 ? sec.total : 0), 0);
+        const totalExpense = sections.reduce((sum, sec) => sum + (sec.total < 0 ? sec.total : 0), 0);
+        const netFlow = totalIncome + totalExpense;
+        const monthEndBalance = monthStartBalance + netFlow;
 
         monthlyData.push({
-            month: monthSummary.month,
-            saldoInicial: monthSummary.saldoInicial,
-            saldoFinal: parseFloat(finalBalance.toFixed(2)),
-            flujoNeto: parseFloat(netFlow.toFixed(2)),
-            flujoOperacional: parseFloat(monthSummary.flows.operational.toFixed(2)),
-            flujoInversion: parseFloat(monthSummary.flows.investment.toFixed(2)),
-            flujoFinancieroExt: parseFloat(monthSummary.flows.external.toFixed(2)),
-            flujoFinancieroInt: parseFloat(monthSummary.flows.internal.toFixed(2)),
-            detalles: monthSummary.details
+            month: monthNames[monthIndex],
+            monthNumber: monthNum,
+            initialBalance: parseFloat(monthStartBalance.toFixed(2)),
+            sections: sections,
+            netFlow: parseFloat(netFlow.toFixed(2)),
+            finalBalance: parseFloat(monthEndBalance.toFixed(2))
         });
 
-        currentBalance = finalBalance;
+        runningBalance = monthEndBalance;
     }
 
-    // 5. NUEVO: Cálculo de Resumen Anual
-    let sumOfMonthlyBalances = 0;
-    monthlyData.forEach(m => {
-        sumOfMonthlyBalances += m.saldoFinal;
-    });
-
+    // 6. Calcular resumen anual
+    const sumOfMonthlyBalances = monthlyData.reduce((sum, m) => sum + m.finalBalance, 0);
     const averageAnnualBalance = sumOfMonthlyBalances / 12;
 
     return {
         year,
         companyId,
-        // Agregamos el resumen aquí para dashboards o KPIs
         annualSummary: {
+            initialBalance: parseFloat(yearStartBalance.toFixed(2)),
             averageBalance: parseFloat(averageAnnualBalance.toFixed(2)),
-            closingBalance: monthlyData[11].saldoFinal // Saldo final de Diciembre
+            closingBalance: monthlyData[11].finalBalance
         },
-        reportData: monthlyData
+        monthlyData: monthlyData
     };
 };
 
