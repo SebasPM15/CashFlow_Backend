@@ -47,7 +47,21 @@ class EmailService {
             
             // ESTO NO CAMBIA: El formato de mailOptions de SendGrid
             // es compatible con el que ya tenías.
-            const mailOptions = { from: config.email.from, to, ...template };
+            const mailOptions = { 
+                from: config.email.from, 
+                to, 
+                ...template,
+                // AGREGAMOS ESTA CONFIGURACIÓN PARA DESACTIVAR EL TRACKING
+                trackingSettings: {
+                    clickTracking: {
+                        enable: false,
+                        enableText: false
+                    },
+                    openTracking: {
+                        enable: false // Opcional: si tampoco quieres rastrear si abrieron el correo
+                    }
+                }
+            };
 
             await this.circuitBreaker.fire(mailOptions);
             logger.info(`Email '${template.subject}' enviado exitosamente a: ${to}`);
