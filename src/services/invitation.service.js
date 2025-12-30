@@ -23,9 +23,9 @@ class InvitationService {
         const t = await db.sequelize.transaction();
         try {
             // 1. Validar que el email no esté ya registrado
-            const existingUser = await db.User.findOne({ 
-                where: { email }, 
-                transaction: t 
+            const existingUser = await db.User.findOne({
+                where: { email },
+                transaction: t
             });
             if (existingUser) {
                 throw new ApiError(409, 'Este correo electrónico ya está registrado en el sistema.');
@@ -92,7 +92,7 @@ class InvitationService {
             }, { transaction: t });
 
             // === PUNTO CRÍTICO: CONFIRMAMOS LA TRANSACCIÓN AQUÍ ===
-            await t.commit(); 
+            await t.commit();
             // A partir de aquí, la invitación YA EXISTE en la base de datos.
             // Si algo falla abajo, NO podemos hacer rollback.
 
@@ -105,7 +105,7 @@ class InvitationService {
                     invitationLink: invitationLink,
                     roleName: role.role_name
                 });
-                
+
                 logger.info(`Invitación creada y enviada a ${email} para la compañía ${company.company_name}`);
             } catch (emailError) {
                 // Si falla el email, solo loggeamos el error pero NO fallamos la petición completa
@@ -131,7 +131,7 @@ class InvitationService {
             throw error instanceof ApiError ? error : new ApiError(500, 'No se pudo crear la invitación.');
         }
     }
-    
+
     async validateInvitationToken(token) {
         try {
             const payload = jwt.verify(token, config.jwt.secret, {
@@ -269,15 +269,15 @@ class InvitationService {
             offset,
             order: [['created_at', 'DESC']],
             include: [
-                { 
-                    model: db.User, 
-                    as: 'invitedBy', 
-                    attributes: ['first_name', 'last_name', 'email'] 
+                {
+                    model: db.User,
+                    as: 'invitedBy',
+                    attributes: ['first_name', 'last_name', 'email']
                 },
-                { 
-                    model: db.Role, 
-                    as: 'role', 
-                    attributes: ['role_name'] 
+                {
+                    model: db.Role,
+                    as: 'role',
+                    attributes: ['role_name']
                 }
             ],
         });
@@ -311,17 +311,29 @@ class InvitationService {
             throw new ApiError(410, 'Esta invitación ha expirado. Crea una nueva invitación.');
         }
 
-        const invitationLink = `${config.server.frontendUrl}/register-employee?token=${invitation.invitation_token}`;
-        await emailService.sendInvitationEmail(invitation.invited_email, {
-            companyName: invitation.company.company_name,
-            invitationCode: invitation.invitation_code,
-            invitationLink: invitationLink,
-            roleName: invitation.role.role_name
-        });
+        // Reenvío del email con manejo de errores
+        try {
+            const invitationLink = `${config.server.frontendUrl}/register-employee?token=${invitation.invitation_token}`;
 
-        logger.info(`Invitación reenviada a ${invitation.invited_email}`);
+            await emailService.sendInvitationEmail(invitation.invited_email, {
+                companyName: invitation.company.company_name,
+                invitationCode: invitation.invitation_code,
+                invitationLink: invitationLink,
+                roleName: invitation.role.role_name
+            });
 
-        return { message: 'Invitación reenviada exitosamente.' };
+            logger.info(`✅ Invitación ${invitationId} reenviada exitosamente a ${invitation.invited_email}`);
+
+            return {
+                message: 'Invitación reenviada exitosamente.',
+                sentTo: invitation.invited_email
+            };
+
+        } catch (emailError) {
+            // Si falla el reenvío, loggeamos pero informamos al admin
+            logger.error(`❌ Error al reenviar invitación ${invitationId}: ${emailError.message}`);
+            throw new ApiError(500, 'No se pudo reenviar el correo de invitación. Intenta nuevamente.');
+        }
     }
 
     async cancelInvitation(invitationId, adminCompanyId) {

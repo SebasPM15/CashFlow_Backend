@@ -11,7 +11,9 @@ import {
     verifyAccountSchema,
     emailSchema,
     resetPasswordSchema,
-    listInvitationsSchema
+    listInvitationsSchema,
+    resendInvitationSchema,  // NUEVO
+    cancelInvitationSchema   // NUEVO
 } from '../validations/auth.validation.js';
 
 const router = Router();
@@ -108,6 +110,28 @@ router.post(
     authorizeRole('admin'), // Solo el admin puede ver esto
     validate(listInvitationsSchema),
     authController.listInvitations
+);
+
+// 6. Reenviar invitación (Solo Admin) - NUEVO
+router.post(
+    '/invitations/resend',
+    tramaValidator,
+    secureEndpoint,
+    checkStatefulSession,
+    authorizeRole('admin'),
+    validate(resendInvitationSchema),
+    authController.resendInvitation
+);
+
+// 7. Cancelar invitación (Solo Admin) - NUEVO
+router.post(
+    '/invitations/cancel',
+    tramaValidator,
+    secureEndpoint,
+    checkStatefulSession,
+    authorizeRole('admin'),
+    validate(cancelInvitationSchema),
+    authController.cancelInvitation
 );
 
 router.post(
