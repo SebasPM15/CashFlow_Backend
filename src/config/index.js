@@ -43,12 +43,10 @@ const env = cleanEnv(process.env, {
     }),
 
     // EMAIL SERVICE
-    SENDGRID_API_KEY: str({ desc: 'API Key for SendGrid' }),
-    EMAIL_HOST: str({ devDefault: 'smtp.mailtrap.io' }),
-    EMAIL_PORT: port({ devDefault: 2525 }),
-    EMAIL_USER: str({ devDefault: 'testuser' }),
-    EMAIL_PASS: str({ devDefault: 'testpass' }),
-    EMAIL_FROM: str({ default: '"MyApp" <no-reply@myapp.com>' }),
+    BREVO_API_KEY: str({ desc: 'API Key for Brevo (Production)', default: '' }),
+    EMAIL_USER: str({ desc: 'Gmail user for development', default: '' }),
+    EMAIL_PASS: str({ desc: 'Gmail app password for development', default: '' }),
+    EMAIL_FROM: str({ default: 'no-reply@cashflow.com' }),
 
     // FRONTEND
     FRONTEND_URL: url({ default: 'http://localhost:3000' }),
@@ -96,14 +94,16 @@ const config = {
         sensitiveFields: env.LOG_SENSITIVE_FIELDS, // <-- AÑADIR ESTA LÍNEA
     },
     email: {
-        apiKey: env.SENDGRID_API_KEY,
-        host: env.EMAIL_HOST,
-        port: env.EMAIL_PORT,
-        auth: {
-            user: env.EMAIL_USER,
-            pass: env.EMAIL_PASS,
+        provider: process.env.NODE_ENV === 'production' ? 'brevo' : 'gmail',
+        // Producción: Brevo API
+        brevoApiKey: process.env.BREVO_API_KEY,
+        // Desarrollo: Gmail SMTP
+        gmail: {
+            user: process.env.EMAIL_USER,
+            pass: process.env.EMAIL_PASS
         },
-        from: env.EMAIL_FROM,
+        // En producción usa el remitente configurado, en desarrollo usa Gmail
+        from: env.NODE_ENV === 'production' ? env.EMAIL_FROM : env.EMAIL_USER,
     },
     supabase: {
         url: process.env.SUPABASE_URL,

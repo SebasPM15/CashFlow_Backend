@@ -116,3 +116,25 @@ export const listInvitationsSchema = Joi.object({
     limit: Joi.number().integer().min(1).max(100).default(20),
     isUsed: Joi.boolean().optional() // true = solo aceptadas, false = solo pendientes, null = todas
 });
+
+/**
+ * Esquema para reenviar una invitación existente.
+ */
+export const resendInvitationSchema = Joi.object({
+    invitationId: Joi.number().integer().positive().required().messages({
+        'number.base': 'El ID de invitación debe ser un número',
+        'number.positive': 'El ID de invitación debe ser positivo',
+        'any.required': 'El ID de invitación es requerido'
+    })
+});
+
+/**
+ * Esquema para cancelar una invitación.
+ */
+export const cancelInvitationSchema = Joi.object({
+    invitationId: Joi.number().integer().positive().required().messages({
+        'number.base': 'El ID de invitación debe ser un número',
+        'number.positive': 'El ID de invitación debe ser positivo',
+        'any.required': 'El ID de invitación es requerido'
+    })
+});

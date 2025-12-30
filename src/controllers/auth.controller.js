@@ -144,6 +144,39 @@ const listInvitations = asyncHandler(async (req, res) => {
     sendResponse(res, 200, 'Listado de invitaciones obtenido exitosamente.', result);
 });
 
+/**
+ * Reenvía una invitación existente (Solo Admins).
+ */
+const resendInvitation = asyncHandler(async (req, res) => {
+    const { dinBody } = req.body;
+    const { invitationId } = dinBody;
+    const adminUser = req.user;
+    
+    // Pasamos el companyId del admin para verificar que la invitación pertenece a su empresa
+    const result = await invitationService.resendInvitation(
+        invitationId, 
+        adminUser.company.company_id
+    );
+
+    sendResponse(res, 200, 'Invitación reenviada exitosamente.', result);
+});
+
+/**
+ * Cancela una invitación pendiente (Solo Admins).
+ */
+const cancelInvitation = asyncHandler(async (req, res) => {
+    const { dinBody } = req.body;
+    const { invitationId } = dinBody;
+    const adminUser = req.user;
+    
+    const result = await invitationService.cancelInvitation(
+        invitationId, 
+        adminUser.company.company_id
+    );
+
+    sendResponse(res, 200, 'Invitación cancelada exitosamente.', result);
+});
+
 export const authController = {
     registerCompany, // NUEVO
     registerEmployee, // NUEVO
@@ -156,5 +189,7 @@ export const authController = {
     resetPassword,
     logout,
     refreshSession,
-    listInvitations
+    listInvitations,
+    resendInvitation,
+    cancelInvitation
 };
